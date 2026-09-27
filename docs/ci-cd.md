@@ -17,7 +17,7 @@ The Maven project version is committed in `pom.xml` and embedded in Spring Boot 
 ```mermaid
 flowchart TD
     Push[Push to main or open PR] --> CI[A. Application CI]
-    CI --> Lint[Reusable: Lint]
+    CI --> Lint[I. Lint]
     CI --> Test[PostgreSQL tests]
     Lint --> Build[Build image and scan archive]
     Test --> Build
@@ -67,7 +67,7 @@ Release manifests are the authoritative version-to-digest mapping. CI publishes 
 
 ### Copy deployment inputs from the summary
 
-After **A. Application CI** publishes, open its run summary for the exact `image` and `source_sha`, version, source CI link and downloadable `image-manifest`. **C. Create Release** shows the same handoff for its selected manifest, even if the current main branch has advanced. Both summaries include all five deployment input names and a `gh workflow run` command. Replace the clearly marked `alloy_image` placeholder with the digest from a successful **Publish Alloy** run in the deployment repository. That separate workflow builds, validates, scans and publishes the collector and uploads `alloy-image-manifest-RUN_ID-ATTEMPT`.
+After **A. Application CI** publishes, open its run summary for the exact `image` and `source_sha`, version, source CI link and downloadable `image-manifest`. **C. Create Release** shows the same handoff for its selected manifest, even if the current main branch has advanced. Both summaries include all five deployment input names and a `gh workflow run` command. Replace the clearly marked `alloy_image` placeholder with the digest from a successful **I. Publish Alloy Image** run in the deployment repository. That separate workflow builds, validates, scans and publishes the collector and uploads `alloy-image-manifest-RUN_ID-ATTEMPT`.
 
 Use `action=deploy` and `first_release=false` for normal releases. Set `first_release=true` only for the initial deployment after database bootstrap. The application's SHA must come from the same manifest as its image; the Alloy manifest's `alloy_source_sha` identifies a different repository and must not be used as deployment's `source_sha`. Publication alone does not deploy the service. AWS roles, state, API settings and environment secrets are configured once in the deployment repository, as described in its setup guide.
 

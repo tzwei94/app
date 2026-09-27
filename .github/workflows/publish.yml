@@ -1,4 +1,4 @@
-name: "Reusable: Publish Scanned Image"
+name: IV. Publish Scanned Image
 
 on:
   workflow_call:
