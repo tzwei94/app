@@ -54,6 +54,39 @@ Store the App's private key as repository secret `RELEASE_APP_PRIVATE_KEY`. Give
 
 Apply the deployment Terraform as an operator before the first publication to create ECR and its IAM roles. `AWS_REGION` must match the repository region. The workflow exchanges OIDC credentials for a short-lived ECR Docker login; no registry password secret is needed. GitHub required environment reviewers are not assumed: availability for private repositories depends on the plan. Human PR review and explicit manual release/deployment remain the controls here.
 
+### Create and install the release GitHub App
+
+This setup is needed for **B. Prepare Release** and **C. Create Release**. Basic CI, ECR publication and AWS deployment do not require it. Create the App under the personal account or organization that owns the application repository.
+
+1. Open the owner's GitHub **Settings → Developer settings → GitHub Apps → New GitHub App**. For an organization, open **Your organizations → Settings** first; use an organization owner or an account permitted to manage its Apps.
+2. Enter a unique App name, such as `YOUR-OWNER-banking-release`, and set **Homepage URL** to the application repository's full GitHub URL. Leave **Callback URL** and **Setup URL** empty, and leave user authorization during installation and device flow disabled. These workflows use installation tokens, so they do not need an OAuth login flow.
+3. Under **Webhook**, clear **Active**. No webhook URL or event subscriptions are needed.
+4. Set the following **Repository permissions**, leaving other optional permissions at **No access**:
+
+   | Permission | Access |
+   |---|---|
+   | Contents | Read and write |
+   | Pull requests | Read and write |
+   | Actions | Read-only |
+   | Workflows | Read and write |
+   | Metadata | Read-only (automatic) |
+
+5. Under **Where can this GitHub App be installed?**, select **Only on this account**, then click **Create GitHub App**.
+6. On the App's settings page, record its **App ID** (not its Client ID or installation ID). Under **Private keys**, click **Generate a private key** and save the downloaded `.pem` file securely outside the repository. Do not commit it.
+7. In the App's sidebar, choose **Install App**, then **Install** for the repository owner. Select **Only select repositories**, choose the application repository, and complete installation. The parent and deployment repositories do not need this release App.
+8. In the application repository, open **Settings → Secrets and variables → Actions**. On **Variables**, create repository variable `RELEASE_APP_ID` with the App ID. On **Secrets**, create repository secret `RELEASE_APP_PRIVATE_KEY` with the entire PEM file, including its BEGIN/END lines and line breaks. These are repository settings, not environment settings.
+
+Alternatively, after authenticating GitHub CLI, configure the same variable and secret from a shell. Replace the placeholders with your application repository, App ID and downloaded key path:
+
+```bash
+gh variable set RELEASE_APP_ID --repo OWNER/APP-REPO --body '123456'
+gh secret set RELEASE_APP_PRIVATE_KEY --repo OWNER/APP-REPO < /absolute/path/to/release-app.private-key.pem
+```
+
+When ready to prepare a real release, run **B. Prepare Release** as described below. Confirm its token step succeeds, the App opens the version PR, and normal PR CI starts. Review the PR before merging. If token creation fails, check the App ID, PEM contents, installation repository access and granted permissions. If permissions are changed later, approve the updated permissions on the installation before retrying. Keep required-review rules in place; do not add the App to a bypass list.
+
+See GitHub's [App registration guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) for the registration form and account ownership options.
+
 ## Version and release lifecycle
 
 1. **Develop.** The initial POM is `0.1.0-SNAPSHOT`. Every main push is tested and published under a unique tag containing its full source SHA, run ID and attempt. Multiple builds may have the same snapshot version; their SHA, run and digest distinguish them.
@@ -67,7 +100,7 @@ Release manifests are the authoritative version-to-digest mapping. CI publishes 
 
 ### Copy deployment inputs from the summary
 
-After **A. Application CI** publishes, open its run summary for the exact `image` and `source_sha`, version, source CI link and downloadable `image-manifest`. **C. Create Release** shows the same handoff for its selected manifest, even if the current main branch has advanced. Both summaries include all five deployment input names and a `gh workflow run` command. Replace the clearly marked `alloy_image` placeholder with the digest from a successful **I. Publish Alloy Image** run in the deployment repository. That separate workflow builds, validates, scans and publishes the collector and uploads `alloy-image-manifest-RUN_ID-ATTEMPT`.
+After **A. Application CI** publishes, open its run summary for the exact `image` and `source_sha`, version, source CI link and downloadable `image-manifest`. **C. Create Release** shows the same handoff for its selected manifest, even if the current main branch has advanced. Both summaries show a field-by-field table in deployment-form order with the exact app image digest and source SHA, plus a `gh workflow run` command. Replace the clearly marked `alloy_image` placeholder with the digest from a successful **I. Publish Alloy Image** run in the deployment repository. That separate workflow builds, validates, scans and publishes the collector and uploads `alloy-image-manifest-RUN_ID-ATTEMPT`.
 
 Use `action=deploy` and `first_release=false` for normal releases. Set `first_release=true` only for the initial deployment after database bootstrap. The application's SHA must come from the same manifest as its image; the Alloy manifest's `alloy_source_sha` identifies a different repository and must not be used as deployment's `source_sha`. Publication alone does not deploy the service. AWS roles, state, API settings and environment secrets are configured once in the deployment repository, as described in its setup guide.
 
