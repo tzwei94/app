@@ -7,7 +7,7 @@ The Maven project version is committed in `pom.xml` and embedded in Spring Boot 
 | Workflow | Trigger | Responsibility |
 |---|---|---|
 | `app-ci.yml` — Application CI | Every push to `main`; PRs targeting `main` | Calls the reusable checks, build and publication workflows. |
-| `lint.yml` | `workflow_call` | Validates workflow YAML, checks Java with Checkstyle, and tests release policy. |
+| `lint.yml` | `workflow_call` | Validates workflow YAML and OpenAPI, checks Java with Checkstyle, and tests release/image policy. |
 | `test.yml` | `workflow_call` | Runs Maven verification and the real PostgreSQL acceptance suite; uploads reports. |
 | `build-image.yml` | `workflow_call`, after lint and tests | Builds the Linux AMD64 image once, scans that archive with Trivy, and passes it to publication as an Actions artifact. |
 | `publish.yml` | `workflow_call`, trusted main pushes only | Verifies the archive's image ID, SHA, platform, labels and packaged Maven version; pushes it to Amazon ECR and saves its digest. |
@@ -30,17 +30,17 @@ flowchart TD
     Record -. operator selects release .-> CD[Separate deployment repository]
 ```
 
-There are no path exclusions or branch-wide concurrency groups in main CI. Multiple main pushes each run their own CI; a newer push does not cancel an older pending build. Publication waits for both checks and the image scan. PRs cannot publish. Repository Actions policies, available runner capacity, explicit cancellation, and GitHub's own skip directives can still prevent a run; the workflow itself does not deliberately skip main commits.
+There are no path exclusions or branch-wide concurrency groups in main CI. Multiple main pushes each run their own CI; a newer push does not cancel an older pending build. Publication waits for both checks and the image scan. Trivy scans the exact archive for vulnerabilities and fails on fixable HIGH/CRITICAL findings (`ignore-unfixed: true`); unpatched findings and lower severities do not fail this gate. PRs cannot publish. Repository Actions policies, available runner capacity, explicit cancellation, and GitHub's own skip directives can still prevent a run; the workflow itself does not deliberately skip main commits.
 
-The default `Dockerfile` is the production image build recipe, explicitly selected by the build workflow. Local builds use `Dockerfile.local` through `make image`; the local recipe compiles inside Docker, while production copies the JAR selected by `JAR_FILE` from the preceding Maven step in GitHub Actions to `/app/app.jar` and starts Java directly. `JAVA_IMAGE` makes the runtime reusable for other executable-JAR applications. Both Java Dockerfiles package the checksum-verified database CA and prepare writable volume directories at build time. ECS supplies matching mounts and uses the image-local certificate; Alloy collects telemetry independently. Telemetry is initialized by the Maven-managed OpenTelemetry Spring Boot starter. Defaults live in `application.yml` and remain overridable with `OTEL_*` environment variables; neither image contains a Java agent. Java setup/caching, checkout, Buildx, image metadata, scanning, artifact transfer, AWS OIDC, secret retrieval, Docker login and PR creation use maintained Actions pinned to commit SHAs. Small native Maven/Docker commands perform operations without a dedicated wrapper action. JavaScript handles project-specific version policy and release validation, with executable tests. `scripts/test.sh` and `scripts/local-smoke.sh` remain local developer conveniences and are not CI orchestration.
+The default `Dockerfile` is the production image build recipe, explicitly selected by the build workflow. Local builds use `Dockerfile.local` through `make image`; the local recipe compiles inside Docker, while production copies the JAR selected by `JAR_FILE` from the preceding Maven step in GitHub Actions to `/app/app.jar` and starts Java directly. `JAVA_IMAGE` makes the runtime reusable for other executable-JAR applications. Both Java Dockerfiles package the checksum-verified database CA and prepare writable volume directories at build time. ECS supplies matching mounts and uses the image-local certificate; Alloy collects telemetry independently. Telemetry is initialized by the Maven-managed OpenTelemetry Spring Boot starter. Defaults live in `application.yml` and remain overridable with `OTEL_*` environment variables; neither image contains a Java agent. Java setup/caching, checkout, Buildx, image metadata, scanning, artifact transfer, AWS OIDC and PR creation use maintained Actions pinned to commit SHAs. ECR login uses `aws ecr get-login-password` piped to `docker login`; no separate secret-retrieval action is needed. Small native Maven/Docker commands perform operations without a dedicated wrapper action. JavaScript handles project-specific version policy and release validation, with executable tests. `scripts/test.sh` and `scripts/local-smoke.sh` remain local developer conveniences and are not CI orchestration.
 
 ## Repository setup
 
 Publish this directory as the root of the application repository so `.github/workflows/` is at the repository root. Configure `main` as the default branch. Protect it with PR review and successful lint, test and build checks; do not require the publication job for PRs because it deliberately skips PRs. Restrict workflow-file changes and release execution to trusted maintainers.
 
-The existing registry-connected self-hosted runner uses labels `self-hosted`, `linux`, `x64`, `banking-app`. Use a current GitHub Actions runner with Node 24 action support (at least 2.329.0), Docker, AWS connectivity and the existing writable `/var/lock/banking/host.lock`. Builds and tests use GitHub-hosted Ubuntu runners; the self-hosted runner only imports/verifies/pushes the scanned image. It takes the shared host lock during the push and uses a job-specific `DOCKER_CONFIG`; no global prune or shared credential file is used.
+The existing registry-connected self-hosted runner uses labels `self-hosted`, `linux`, `x64`, `banking-app`. Use a current GitHub Actions runner with Node 24 action support (at least 2.329.0), Docker, AWS CLI, `flock`, AWS connectivity and the existing writable `/var/lock/banking/host.lock`. Builds and tests use GitHub-hosted Ubuntu runners; the self-hosted runner only imports/verifies/pushes the scanned image. It takes the shared host lock during the push and uses a job-specific `DOCKER_CONFIG`; no global prune or shared credential file is used.
 
-Runner access is a separate control from a job's `if` condition: a PR can propose different workflow YAML before review. For organization runners, restrict the runner group to this repository and to `OWNER/REPO/.github/workflows/publish.yml@refs/heads/main`; the allowed workflow must be the one directly defining the runner job. See [GitHub's workflow access policy](https://docs.github.com/en/enterprise-cloud@latest/actions/how-tos/manage-runners/self-hosted-runners/manage-access). For a personal repository without that control, retain the existing private, trusted-contributor-only boundary and do not approve untrusted PR workflow execution on a repository with access to this shared runner. The YAML alone cannot enforce that external runner policy.
+Runner access is a separate control from a job's `if` condition: a PR can propose different workflow YAML before review. For organization runners, restrict the runner group to this repository and to `OWNER/REPO/.github/workflows/publish.yml@refs/heads/main`; the allowed workflow must be the one directly defining the runner job. See [GitHub's workflow access policy](https://docs.github.com/en/enterprise-cloud@latest/actions/how-tos/manage-runners/self-hosted-runners/manage-access). For a personal repository without that control, do not approve untrusted PR workflow execution on a repository with access to this shared runner. The application repository is public; verify an enforceable runner restriction or change the runner arrangement before allowing untrusted workflow execution. The YAML alone cannot enforce that external runner policy.
 
 | Repository variable | Value |
 |---|---|
@@ -70,17 +70,18 @@ CI keeps the image archive for seven days, reports for fourteen days and the ima
 
 ## Local verification
 
-With Java 25 and Docker available:
+Run from the application repository root with Java 25, Node.js 24, Docker, OpenSSL, unzip and uv available:
 
 ```sh
 node --test .github/scripts/*.test.cjs
-mvn -B --no-transfer-progress checkstyle:check
+./mvnw -B --no-transfer-progress checkstyle:check
+scripts/validate-api.sh
 scripts/test.sh --no-transfer-progress
 docker run --rm -v "$PWD:/repo" -w /repo \
   rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 ```
 
-The release-policy tests cover first release, patch/minor/major decisions, POM editing, CI provenance, prepared-release selection and rejection of incompatible manifests. Local workflow lint, unit tests and image checks cannot exercise GitHub App permissions, remote artifact retention, OIDC trust, Amazon ECR publication or actual GitHub Release API behavior. Those need the first configured repository run.
+The release-policy tests cover first release, patch/minor/major decisions, POM editing, CI provenance, prepared-release selection and rejection of incompatible manifests. Local workflow lint, unit tests and image checks cannot exercise GitHub App permissions, remote artifact retention, OIDC trust, Amazon ECR publication or actual GitHub Release API behavior. Verify those using a configured repository run; a past successful run does not validate later permission or infrastructure changes. `make verify` includes the contract, Java and Node checks above but does not invoke `actionlint` or Trivy.
 
 ## References
 

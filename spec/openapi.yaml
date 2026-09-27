@@ -6,7 +6,7 @@ info:
     serving process. Actuator is isolated on loopback port 9000.
 servers:
 - url: http://localhost:8080
-  description: Local application; deployment uses the HTTPS ALB hostname.
+  description: Direct local JAR; Docker uses an assigned loopback port. Deployment uses the public HTTPS hostname.
 security:
 - bearerAuth: []
 paths:
@@ -57,8 +57,7 @@ paths:
           format: uuid
       responses:
         '200':
-          description: Current balance, or the original result for an identical idempotent
-            retry.
+          description: Current account balance.
           content:
             application/json:
               schema:
@@ -213,6 +212,7 @@ paths:
   /readyz:
     get:
       operationId: readyz
+      description: Runs SELECT 1 to check database connectivity; does not verify schema or migration state.
       security: []
       responses:
         '200':
@@ -230,6 +230,7 @@ paths:
   /version:
     get:
       operationId: version
+      description: Reports the packaged Maven version and SOURCE_SHA; defaults are dev and local when unavailable.
       security: []
       responses:
         '200':

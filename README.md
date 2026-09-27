@@ -4,7 +4,7 @@ A Spring Boot 4.1.1 application using Java 25, Maven and PostgreSQL. JWT-authent
 
 ## Run the tests
 
-Requires Java 25, Docker, OpenSSL, unzip and uv. The checked-in Maven wrapper pins Maven 3.9.11 and verifies its distribution checksum. On macOS with multiple JDKs:
+Run these commands from `app/` (or the root of a standalone application checkout). Requires Java 25, Docker with Compose, OpenSSL, curl, unzip and uv. `make verify` also requires Node.js 24; `make smoke` requires the sibling `../deployment/deploy/monitoring` checkout. The checked-in Maven wrapper pins Maven 3.9.11 and verifies its distribution checksum. On macOS with multiple JDKs:
 
 ```sh
 # Select an installed Java 25 JDK.
@@ -17,7 +17,7 @@ scripts/local-smoke.sh
 
 The acceptance suite creates and removes its own PostgreSQL container, uses synthetic RSA keys, and tests exact decimals, validation, JWT claims/signatures, account ownership, concurrent withdrawals, concurrent retries and rollback atomicity. `BANK_TEST_DB_URL` / `BANK_TEST_DB_PASSWORD` can select an existing disposable test database with username `banking_test`; the suite clears its banking tables.
 
-The smoke script generates a temporary signing key and Basic credentials, starts PostgreSQL, executes migrations, serves HTTP, obtains tokens from `/auth/token`, checks balances/mutations/retries, restarts the application, and sends all three signals through Alloy to a local authenticated protocol receiver. It deletes its containers and volumes afterward. This validates local transport, not storage/query behavior in the remote Grafana stack. Local smoke uses loopback HTTP; deployed smoke verifies the public HTTPS certificate.
+The smoke script generates a temporary signing key and Basic credentials, starts PostgreSQL, executes migrations, serves HTTP, obtains tokens from `/auth/token`, checks balances/mutations/retries, restarts the application, and sends all three signals through Alloy to a local authenticated protocol receiver. It deletes its containers and volumes afterward. The receiver counts authenticated, nonempty requests; it does not decode telemetry payloads or validate storage/query behavior in the remote Grafana stack. Each API smoke sequence returns the balance to its starting value, so a successful post-restart sequence confirms availability but does not independently prove a nonzero balance change survived the restart. Local smoke uses loopback HTTP; deployed smoke verifies the public HTTPS certificate.
 
 ## Try the API in Postman
 
@@ -25,7 +25,7 @@ Import [the collection](postman/Banking-API.postman_collection.json) and [local 
 
 ## API contract
 
-All banking endpoints require `Authorization: Bearer <RS256 JWT>`. Validate the configured issuer, audience, expiration and nonempty subject. `POST /auth/token` requires HTTP Basic credentials from `TOKEN_USERNAME` and `TOKEN_PASSWORD` and returns `{access_token, token_type, expires_in}`. Tokens last 900 seconds and use the configured `TOKEN_SUBJECT` (default `alice`), never a caller-supplied subject. Basic credentials cannot access banking endpoints. `JWT_PRIVATE_KEY` is a shared PKCS#8 PEM RSA private key (at least 2048 bits); the application derives its verification key. Store the same key on all replicas so tokens survive restarts and load balancing. Empty login credentials, subject, or a missing/invalid signing key prevent startup. Token responses use `Cache-Control: no-store`.
+All banking endpoints require `Authorization: Bearer <RS256 JWT>`. Validate the configured issuer, audience, expiration and nonempty subject. `POST /auth/token` requires HTTP Basic credentials from `TOKEN_USERNAME` and `TOKEN_PASSWORD` and returns `{access_token, token_type, expires_in}`. Tokens last 900 seconds and use the configured `TOKEN_SUBJECT` (default `alice`), never a caller-supplied subject. Basic credentials cannot access banking endpoints. `JWT_PRIVATE_KEY` is a shared PKCS#8 PEM RSA private key (at least 2048 bits); the application derives its verification key. Store the same key on all replicas so tokens survive restarts and load balancing. Empty login credentials, issuer, audience or subject, a colon in `TOKEN_USERNAME`, or a missing/invalid signing key prevent startup. Token responses use `Cache-Control: no-store`.
 
 | Method/path | Request | Result |
 |---|---|---|
@@ -33,13 +33,13 @@ All banking endpoints require `Authorization: Bearer <RS256 JWT>`. Validate the 
 | `POST /accounts/{uuid}/deposits` | `{"amount":0.01}` and `Idempotency-Key` | Resulting balance |
 | `POST /accounts/{uuid}/withdrawals` | Same | Resulting balance |
 | `POST /auth/token` | HTTP Basic authentication; no body | RS256 Bearer token, valid for 15 minutes |
-| `GET /readyz` | No credentials | Minimal DB readiness, 200/503 |
+| `GET /readyz` | No credentials | `SELECT 1` database connectivity, 200/503; does not validate schema |
 | `GET /livez` | No credentials | Minimal process health |
-| `GET /version` | No credentials | Build version and source SHA |
+| `GET /version` | No credentials | `{version, source}` from build information and `SOURCE_SHA` |
 
 Money is positive SGD with at most two fractional digits and seventeen integer digits. Mutations lock the account row and write the balance and operation ledger in one transaction. A key is 1–128 ASCII letters/digits or `._:-`, scoped to an account. Replaying the same amount/operation returns its original result, even after later operations. Changing the payload for an existing key returns 409. Keys are retained with the ledger; there is no expiry policy in this demonstration.
 
-400 means invalid input; 401 invalid/missing authentication; 404 unknown or unowned account; 409 insufficient funds, balance limit or idempotency conflict; 500 is a redacted server failure. The demo uses a seeded account and has no account creation or deletion endpoints. `SEED_SYNTHETIC=true` on the separate migration task creates account `00000000-0000-0000-0000-000000000001`, subject `alice`, SGD100 once. Repeated migrations do not reset it.
+400 means invalid input; 401 invalid/missing authentication; 404 unknown or unowned account; 409 insufficient funds, balance limit or idempotency conflict; 500 is a redacted server failure. The demo uses a seeded account and has no account creation or deletion endpoints. `SEED_SYNTHETIC=true` on the separate migration task creates account `00000000-0000-0000-0000-000000000001`, subject `alice`, SGD100 once. Repeated migrations do not reset it. The seed always belongs to `alice`; setting `TOKEN_SUBJECT` to another value does not change that ownership.
 
 ## Database migrations
 
@@ -59,7 +59,7 @@ docker run --rm --network banking-quickstart_default \
 DOCKER_NETWORK=banking-quickstart_default SEED_SYNTHETIC=true make migrate
 ```
 
-The shortcut accepts `MIGRATION_IMAGE` (default `banking-api:local`) and an optional `DOCKER_NETWORK`. It requires the three database variables and defaults synthetic seeding to false. Use a JDBC URL reachable from the container; `localhost` refers to that container itself. Migration failures return a nonzero exit status. Start the API only after the command succeeds. Compose has no migration service; `docker compose up` alone does not apply schema changes. Migration output is printed by the one-off container.
+A migration container exits successfully when its work finishes; it is not an HTTP service. The shortcut accepts `MIGRATION_IMAGE` (default `banking-api:local`) and an optional `DOCKER_NETWORK`. It requires the three database variables and defaults synthetic seeding to false. Use a JDBC URL reachable from the container; `localhost` refers to that container itself. Migration failures return a nonzero exit status. Start the API only after the command succeeds. Compose has no migration service; `docker compose up` alone does not apply schema changes. Migration output is printed by the one-off container.
 
 ### Rollback and checksum maintenance
 
@@ -122,11 +122,11 @@ Official guide: [OpenTelemetry Spring Boot starter](https://opentelemetry.io/doc
 
 `src/main/java/dev/banking/account/` contains `api`, `application`, `domain` and `infrastructure`. The transactional application service coordinates the domain rules and JDBC repository; the lock, balance update and ledger insert stay in one transaction. `common/` contains health/version APIs, error mapping, JWT configuration and administrative database commands. `BankingApplication` remains the component-scan root.
 
-The [OpenAPI contract](spec/openapi.yaml) describes the existing banking routes. `make verify` runs Checkstyle, release-policy tests, OpenAPI validation and the PostgreSQL acceptance suite. `make smoke` builds both local images and tests API persistence and telemetry. GitHub workflows live at this repository's root, independently from the deployment repository.
+The [OpenAPI contract](spec/openapi.yaml) describes the existing banking routes. `make verify` runs Checkstyle, release-policy tests, OpenAPI validation and the PostgreSQL acceptance suite. `make smoke` builds both local images and exercises the API before and after restart, plus telemetry transport. GitHub workflows live at this repository's root, independently from the deployment repository.
 
 `docker/docker-compose.infra.yml` is the local PostgreSQL/application/Alloy test fixture. `application-local.yml` is an explicit opt-in profile for running the JAR directly: it binds HTTP to localhost:8080 and still requires DB credentials and a JWT signing private key and Basic login credentials. Run migrations separately before starting it. Container defaults use HTTP on 8080 and loopback Actuator on 9000.
 
-Maven Wrapper generation and checksum support follow the [Apache Maven documentation](https://maven.apache.org/tools/wrapper/). Redis, ECR, Testcontainers, JaCoCo and OWASP are not introduced by the structural alignment; the project's selected stack and existing test/scan tools remain authoritative.
+Maven Wrapper generation and checksum support follow the [Apache Maven documentation](https://maven.apache.org/tools/wrapper/). Publication uses Amazon ECR; vulnerability scanning uses Trivy. Tests use a disposable PostgreSQL Docker container rather than Testcontainers. There is no Redis dependency or JaCoCo coverage gate.
 
 See [test coverage and verification commands](docs/local-verification.md).
 

@@ -9,7 +9,7 @@ Select **Banking API - local template** as the active environment. Set these val
 
 | Variable | Value |
 |---|---|
-| `base_url` | Running API address, without a trailing slash. Direct local JAR: `http://localhost:8080`. Docker Compose: use its assigned host port. Deployed API: public `https://` ALB hostname. |
+| `base_url` | Running API address, without a trailing slash. Direct local JAR: `http://localhost:8080`. Docker Compose: use its assigned host port. Deployed API: public `https://` hostname covered by the ALB certificate. |
 | `token_username` | The configured `TOKEN_USERNAME`. |
 | `token_password` | The configured `TOKEN_PASSWORD`; keep this local. |
 | `api_token` | Automatically saved by **Get token**; no manual generation needed. |
@@ -20,7 +20,17 @@ Select **Banking API - local template** as the active environment. Set these val
 
 Start the stack using the main repository's [quickstart](https://github.com/tzwei94/assignment/blob/main/QUICKSTART.md). Set `base_url` to its assigned HTTP address and copy the startup `TOKEN_USERNAME` / `TOKEN_PASSWORD` into the corresponding Postman environment variables.
 
-Send **Authentication → Get token** (`POST /auth/token`). It uses Basic authentication and saves the returned `access_token` as `api_token` automatically. A failed login clears the previous token. Tokens expire after 15 minutes; send Get token again when they expire. No Python token generator is needed. The server selects the token subject using `TOKEN_SUBJECT` (default `alice`); clients cannot request a different account owner.
+To rediscover the quickstart port without printing credentials, run from the parent repository root:
+
+```sh
+docker port banking-quickstart-api-1 8080/tcp
+```
+
+For example, `127.0.0.1:49152` means `base_url=http://127.0.0.1:49152`. Use the current output, not a previously saved port. If you selected a different Compose project name, inspect that project's API container instead. `make smoke` creates a temporary stack and removes it when finished, so its URL is not a persistent Postman endpoint.
+
+`ECONNREFUSED` means no service is accepting the connection at that address; check the running container and host port before changing authentication. HTTP 401 means the API was reached but credentials or the Bearer token need attention. A successful `/readyz` checks database connectivity only; migrations must still have completed before banking requests work.
+
+Send **Authentication → Get token** (`POST /auth/token`). It uses Basic authentication and saves the returned `access_token` as `api_token` automatically. A failed login clears the previous token. Tokens expire after 15 minutes; send Get token again when they expire. No Python token generator is needed. The server selects the token subject using `TOKEN_SUBJECT` (default `alice`); clients cannot request a different account owner. The migration seed belongs to `alice`; another `TOKEN_SUBJECT` will get 404 for that seeded account.
 
 Local HTTP needs no certificate settings. Use public HTTPS with normal certificate verification for deployed Basic authentication. Keep credential-bearing exports local; the committed template has empty credentials.
 
