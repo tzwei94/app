@@ -1,0 +1,161 @@
+name: Create release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci-run-id:
+        description: Successful Application CI run ID for the merged release-preparation PR
+        type: string
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Verify CI run and select its exact manifest artifact
+        id: ci
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          CI_RUN_ID: ${{ inputs.ci-run-id }}
+        with:
+          script: |
+            const policy = require('./.github/scripts/release.cjs');
+            if (!/^[1-9]\d*$/.test(process.env.CI_RUN_ID)) throw new Error('Invalid CI run ID');
+            const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: Number(process.env.CI_RUN_ID)});
+            policy.validateRun(run, process.env.GITHUB_REPOSITORY, process.env.CI_RUN_ID);
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts,
+              {...context.repo, run_id: run.id, per_page: 100});
+            core.setOutput('artifact-id', policy.selectManifestArtifact(artifacts, run));
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.ci.outputs.artifact-id }}
+          merge-multiple: true
+          path: .release
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.ci-run-id }}
+      - name: Create repository-scoped release App token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Verify image, final POM, and merged preparation PR
+        id: candidate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          CI_RUN_ID: ${{ inputs.ci-run-id }}
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          RELEASE_BOT: ${{ steps.app.outputs.app-slug }}[bot]
+        with:
+          script: |
+            const fs = require('node:fs');
+            const policy = require('./.github/scripts/release.cjs');
+            const repo = context.repo;
+            const {data: run} = await github.rest.actions.getWorkflowRun({...repo, run_id: Number(process.env.CI_RUN_ID)});
+            policy.validateRun(run, process.env.GITHUB_REPOSITORY, process.env.CI_RUN_ID);
+            const manifest = JSON.parse(fs.readFileSync('.release/image-manifest.json', 'utf8'));
+            const pomAt = async ref => {
+              const {data} = await github.rest.repos.getContent({...repo, path: 'pom.xml', ref});
+              if (data.type !== 'file' || data.encoding !== 'base64') throw new Error('Expected a regular POM file');
+              return Buffer.from(data.content, 'base64').toString('utf8');
+            };
+            const pom = await pomAt(run.head_sha);
+            policy.validateManifest(manifest, run, policy.readPomVersion(pom), process.env.IMAGE_REPOSITORY);
+            const prs = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {...repo, commit_sha: run.head_sha, per_page: 100});
+            const pr = policy.validatePreparedRelease(prs, run.head_sha, manifest.version,
+              process.env.GITHUB_REPOSITORY, process.env.RELEASE_BOT);
+            const files = await github.paginate(github.rest.pulls.listFiles, {...repo, pull_number: pr.number, per_page: 100});
+            if (files.length !== 1 || files[0].filename !== 'pom.xml' || files[0].status !== 'modified') {
+              throw new Error('Release-preparation PR must change only pom.xml');
+            }
+            const {data: commit} = await github.rest.git.getCommit({...repo, commit_sha: run.head_sha});
+            if (!commit.parents.length) throw new Error('Release-preparation commit has no parent');
+            policy.validatePomPromotion(await pomAt(commit.parents[0].sha), pom, manifest.version);
+            const releases = await github.paginate(github.rest.repos.listReleases, {...repo, per_page: 100});
+            const latest = policy.latestStableVersion(releases);
+            if (latest && policy.compareVersions(manifest.version, latest) < 0) {
+              throw new Error('A newer stable version is already released');
+            }
+            core.setOutput('version', manifest.version);
+            core.setOutput('image', manifest.image);
+      - name: Record the existing image as a GitHub release
+        id: publish
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          script: |
+            const fs = require('node:fs');
+            const policy = require('./.github/scripts/release.cjs');
+            const manifest = JSON.parse(fs.readFileSync('.release/image-manifest.json', 'utf8'));
+            core.setOutput('url', await policy.publishRelease(github, context.repo, manifest));
+      - name: Check out current main for the next-development PR
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
+      - name: Advance only an unchanged released project version
+        id: snapshot
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RELEASED_VERSION: ${{ steps.candidate.outputs.version }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const policy = require('./.github/scripts/release.cjs');
+            const xml = fs.readFileSync('pom.xml', 'utf8');
+            const current = policy.readPomVersion(xml);
+            const next = policy.snapshotUpdate(process.env.RELEASED_VERSION, current);
+            if (next) {
+              fs.writeFileSync('pom.xml', policy.replacePomVersion(xml, current, next));
+              core.setOutput('version', next);
+            } else {
+              core.notice(`Current main is already ${current}; leaving its version unchanged.`);
+            }
+      - name: Open next-development PR
+        if: steps.snapshot.outputs.version != ''
+        id: pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          token: ${{ steps.app.outputs.token }}
+          base: main
+          branch: release/next-v${{ steps.snapshot.outputs.version }}
+          add-paths: pom.xml
+          sign-commits: true
+          commit-message: 'chore: begin ${{ steps.snapshot.outputs.version }} development'
+          title: 'Begin ${{ steps.snapshot.outputs.version }} development'
+          body: |
+            Release [v${{ steps.candidate.outputs.version }}](${{ steps.publish.outputs.url }}) records the tested Docker image. Resume development with Maven version `${{ steps.snapshot.outputs.version }}`.
+
+            Merge after the normal PR checks pass. Subsequent main pushes publish uniquely identified CI images; the next release is prepared separately.
+      - name: Summarize release and deployment handoff
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RELEASE_URL: ${{ steps.publish.outputs.url }}
+          IMAGE: ${{ steps.candidate.outputs.image }}
+          NEXT_PR: ${{ steps.pr.outputs.pull-request-url }}
+        with:
+          script: |
+            core.summary.addHeading('Release recorded').addLink('GitHub release', process.env.RELEASE_URL)
+              .addCodeBlock(process.env.IMAGE)
+              .addRaw('\nUse the release manifest in the separate deployment workflow.\n');
+            if (process.env.NEXT_PR) core.summary.addLink('Review next-development PR', process.env.NEXT_PR);
+            await core.summary.write();

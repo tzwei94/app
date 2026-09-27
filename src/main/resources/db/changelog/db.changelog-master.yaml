@@ -1,0 +1,12 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-banking
+      author: banking
+      changes:
+        - sqlFile:
+            path: 001-banking.sql
+            relativeToChangelogFile: true
+      rollback:
+        - sqlFile:
+            path: 001-banking-rollback.sql
+            relativeToChangelogFile: true

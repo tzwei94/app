@@ -1,0 +1,134 @@
+name: Publish scanned image
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        required: true
+        type: string
+      image-id:
+        required: true
+        type: string
+      image-digest:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      local-image:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, banking-app]
+    timeout-minutes: 20
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+      LOCAL_IMAGE: ${{ inputs.local-image }}
+      IMAGE_ID: ${{ inputs.image-id }}
+      IMAGE_DIGEST: ${{ inputs.image-digest }}
+      APP_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate publication destination
+        id: destination
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const repository = process.env.IMAGE_REPOSITORY;
+            const destination = /^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com\/([a-z0-9]+(?:[._/-][a-z0-9]+)*)$/.exec(repository || '');
+            if (!destination || destination[2] !== process.env.AWS_REGION) {
+              throw new Error('Set IMAGE_REPOSITORY to the private ECR account.dkr.ecr.region.amazonaws.com/repository path in AWS_REGION.');
+            }
+            if (![process.env.IMAGE_ID, process.env.IMAGE_DIGEST].every(value => /^sha256:[a-f0-9]{64}$/.test(value || ''))) {
+              throw new Error('Build did not provide valid image configuration and manifest digests.');
+            }
+            core.setOutput('registry', repository.split('/')[0]);
+            core.setOutput('tag', `${repository}:sha-${context.sha}-${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`);
+            core.exportVariable('DOCKER_CONFIG', `${process.env.RUNNER_TEMP}/banking-docker-${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`);
+      - name: Download the scanned image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/banking-image
+      - name: Load the image without rebuilding
+        run: |
+          docker load --input "$RUNNER_TEMP/banking-image/banking-api.tar"
+          docker image inspect "$LOCAL_IMAGE" > "$RUNNER_TEMP/banking-image/inspect.json"
+      - name: Verify image identity and embedded build version
+        id: verified
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { readPomVersion } = require('./.github/scripts/release.cjs');
+            const { verifyImage, verifyBuildVersion } = require('./.github/scripts/image.cjs');
+            const [image] = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/banking-image/inspect.json`, 'utf8'));
+            const loadedId = verifyImage(image, {imageId: process.env.IMAGE_ID, imageDigest: process.env.IMAGE_DIGEST,
+              sha: context.sha, version: process.env.APP_VERSION, pomVersion: readPomVersion(fs.readFileSync('pom.xml', 'utf8'))});
+            const output = await exec.getExecOutput('docker', ['run', '--rm', '--entrypoint', 'sh', loadedId,
+              '-c', 'cd /tmp && jar xf /app/app.jar META-INF/build-info.properties && cat META-INF/build-info.properties']);
+            verifyBuildVersion(output.stdout, process.env.APP_VERSION);
+            core.setOutput('loaded-image-id', loadedId);
+      - name: Authenticate to AWS with OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Log in to Amazon ECR
+        shell: bash
+        env:
+          REGISTRY_HOST: ${{ steps.destination.outputs.registry }}
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" |
+            docker login --username AWS --password-stdin "$REGISTRY_HOST"
+      - name: Publish the verified image
+        env:
+          IMAGE_TAG: ${{ steps.destination.outputs.tag }}
+          LOADED_IMAGE_ID: ${{ steps.verified.outputs.loaded-image-id }}
+        run: |
+          exec 9>/var/lock/banking/host.lock
+          flock 9
+          docker tag "$LOADED_IMAGE_ID" "$IMAGE_TAG"
+          docker push "$IMAGE_TAG"
+          docker image inspect "$IMAGE_TAG" > "$RUNNER_TEMP/banking-image/published.json"
+      - name: Record immutable image manifest
+        env:
+          IMAGE_TAG: ${{ steps.destination.outputs.tag }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const [image] = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/banking-image/published.json`, 'utf8'));
+            const digest = (image.RepoDigests || []).find(value => value.startsWith(`${process.env.IMAGE_REPOSITORY}@sha256:`));
+            if (!digest || !/@sha256:[a-f0-9]{64}$/.test(digest)) throw new Error('Registry digest was not returned after push.');
+            const manifest = {schema_version: 1, image: digest, image_tag: process.env.IMAGE_TAG,
+              image_id: image.Id, source_sha: context.sha, version: process.env.APP_VERSION,
+              repository: `${context.repo.owner}/${context.repo.repo}`, run_id: context.runId,
+              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT), workflow: 'app-ci.yml'};
+            fs.writeFileSync('image-manifest.json', JSON.stringify(manifest, null, 2) + '\n');
+            await core.summary.addHeading('Published image').addTable([
+              [{data: 'Version', header: true}, manifest.version],
+              [{data: 'Source commit', header: true}, manifest.source_sha],
+              [{data: 'Image digest', header: true}, manifest.image]
+            ]).addRaw('CI ends here. Use Prepare release or Create release to select a version; deployment is separate.').write();
+      - name: Save release input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-manifest
+          path: image-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+      - name: Remove job registry credentials
+        if: always() && steps.destination.outcome == 'success'
+        run: rm -rf -- "$DOCKER_CONFIG"

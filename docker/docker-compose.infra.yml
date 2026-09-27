@@ -1,0 +1,57 @@
+services:
+  db:
+    image: postgres:17.9-alpine@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
+    environment:
+      POSTGRES_DB: banking
+      POSTGRES_USER: banking_test
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U banking_test -d banking']
+      interval: 2s
+      retries: 30
+  api:
+    image: ${API_IMAGE:-banking-api:local}
+    read_only: true
+    mem_limit: 704m
+    tmpfs: ['/tmp:uid=10001,gid=10001,mode=700']
+    ports: ['127.0.0.1::8080']
+    volumes: ['logs:/var/log/app']
+    environment:
+      LOG_PATH: /var/log/app
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=55 -XX:+ExitOnOutOfMemoryError"
+      DB_URL: jdbc:postgresql://db:5432/banking
+      DB_USERNAME: banking_test
+      DB_PASSWORD: ${DB_PASSWORD:?}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?}
+      TOKEN_USERNAME: ${TOKEN_USERNAME:?}
+      TOKEN_PASSWORD: ${TOKEN_PASSWORD:?}
+      TOKEN_SUBJECT: ${TOKEN_SUBJECT:-alice}
+      OTEL_TRACES_SAMPLER_ARG: '1.0'
+    depends_on:
+      db: {condition: service_healthy}
+  alloy:
+    image: ${ALLOY_IMAGE:-banking-alloy:local}
+    network_mode: service:api
+    read_only: true
+    mem_limit: 320m
+    volumes: ['logs:/var/log/app:ro', 'alloy:/var/lib/alloy/data']
+    environment:
+      SERVICE_NAME: banking-api
+      LOG_GLOB: /var/log/app/application*.log
+      METRICS_TARGET: 127.0.0.1:9000
+      METRICS_PATH: /actuator/prometheus
+      ENVIRONMENT: local
+      LOKI_URL: http://collector:8080/loki/api/v1/push
+      METRICS_URL: http://collector:8080/api/v1/write
+      TRACES_BASE_URL: http://collector:8080
+      TELEMETRY_USERNAME: test
+      TELEMETRY_PASSWORD: test
+    depends_on: [api, collector]
+  collector:
+    image: python:3.13.7-alpine@sha256:9ba6d8cbebf0fb6546ae71f2a1c14f6ffd2fdab83af7fa5669734ef30ad48844
+    command: [python, /collector.py]
+    volumes: ['./collector.py:/collector.py:ro']
+    ports: ['127.0.0.1::8080']
+volumes:
+  logs:
+  alloy:

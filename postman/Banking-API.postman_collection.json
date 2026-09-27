@@ -1,0 +1,372 @@
+{
+  "info": {
+    "name": "Banking API",
+    "description": "Banking API: select an environment with base_url, token_username and token_password. Run Health, Authentication, then Banking. Get token saves api_token automatically (15-minute lifetime). The default banking sequence restores the starting balance. See postman/README.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{api_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "deposit_key",
+      "value": ""
+    },
+    {
+      "key": "withdrawal_key",
+      "value": ""
+    },
+    {
+      "key": "deposit_result",
+      "value": ""
+    },
+    {
+      "key": "starting_balance",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health (no authentication)",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/livez",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Healthy\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql(\"UP\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/readyz",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Healthy\", () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql(\"UP\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Version",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/version",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Build metadata\", () => { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.version).to.be.a(\"string\"); pm.expect(body.source).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Get token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{token_username}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{token_password}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/auth/token",
+            "description": "HTTP Basic login. No request body. Saves api_token into the selected environment for later banking requests."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.unset(\"api_token\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"15-minute Bearer token\", () => { const body = pm.response.json(); pm.expect(body.token_type).to.eql(\"Bearer\"); pm.expect(body.expires_in).to.eql(900); pm.expect(body.access_token).to.be.a(\"string\").and.not.empty; });",
+                  "pm.test(\"Token response is not cached\", () => pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"));",
+                  "if (pm.response.code === 200) pm.environment.set(\"api_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Banking (run in order)",
+      "item": [
+        {
+          "name": "Get balance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/accounts/{{account_id}}/balance"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"SGD balance response\", () => { const body = pm.response.json(); pm.expect(body.currency).to.eql(\"SGD\"); pm.expect(body.balance).to.be.a(\"number\"); });",
+                  "if (pm.response.code === 200) pm.collectionVariables.set(\"starting_balance\", String(pm.response.json().balance));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deposit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{deposit_key}}"
+              }
+            ],
+            "url": "{{base_url}}/accounts/{{account_id}}/deposits",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"amount\": {{amount}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"deposit_key\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"SGD balance response\", () => { const body = pm.response.json(); pm.expect(body.currency).to.eql(\"SGD\"); pm.expect(body.balance).to.be.a(\"number\"); });",
+                  "if (pm.response.code === 200) pm.collectionVariables.set(\"deposit_result\", pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry same deposit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{deposit_key}}"
+              }
+            ],
+            "url": "{{base_url}}/accounts/{{account_id}}/deposits",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"amount\": {{amount}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get(\"deposit_key\")) throw new Error(\"Send Deposit first; keep amount and account_id unchanged for the retry.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"SGD balance response\", () => { const body = pm.response.json(); pm.expect(body.currency).to.eql(\"SGD\"); pm.expect(body.balance).to.be.a(\"number\"); });",
+                  "pm.test(\"Retry returns original result\", () => pm.expect(pm.response.json()).to.deep.equal(JSON.parse(pm.collectionVariables.get(\"deposit_result\"))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Withdraw",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{withdrawal_key}}"
+              }
+            ],
+            "url": "{{base_url}}/accounts/{{account_id}}/withdrawals",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"amount\": {{amount}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"withdrawal_key\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"SGD balance response\", () => { const body = pm.response.json(); pm.expect(body.currency).to.eql(\"SGD\"); pm.expect(body.balance).to.be.a(\"number\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get final balance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/accounts/{{account_id}}/balance"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"SGD balance response\", () => { const body = pm.response.json(); pm.expect(body.currency).to.eql(\"SGD\"); pm.expect(body.balance).to.be.a(\"number\"); });",
+                  "pm.test(\"Full sequence restores starting balance\", () => { pm.expect(pm.collectionVariables.get(\"starting_balance\"), \"Send Get balance before running the mutations\").not.to.eql(\"\"); pm.expect(pm.response.json().balance).to.eql(Number(pm.collectionVariables.get(\"starting_balance\"))); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject missing token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/accounts/{{account_id}}/balance",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Authentication required\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

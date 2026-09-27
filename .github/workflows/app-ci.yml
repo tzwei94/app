@@ -1,0 +1,33 @@
+name: Application CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Deliberately no branch-wide concurrency group: every main push must run.
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+  test:
+    uses: ./.github/workflows/test.yml
+  build:
+    needs: [lint, test]
+    uses: ./.github/workflows/build-image.yml
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      artifact-name: ${{ needs.build.outputs.artifact-name }}
+      image-id: ${{ needs.build.outputs.image-id }}
+      image-digest: ${{ needs.build.outputs.image-digest }}
+      version: ${{ needs.build.outputs.version }}
+      local-image: ${{ needs.build.outputs.local-image }}

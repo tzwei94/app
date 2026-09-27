@@ -1,0 +1,36 @@
+# Build outputs and IDE files
+target/
+build/
+.gradle/
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+*.class
+__pycache__/
+.DS_Store
+
+# Local data and credentials
+local-data/
+.private/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.log
+credentials*
+secrets.local*
+image-manifest.json
+
+# Private documents and infrastructure profiles
+*.pdf
+*.tfvars
+*.tfvars.json
+*.plan
+!*.tfvars.json.example
+!*.example.tfvars
+!*.example.tfvars.json

@@ -1,0 +1,302 @@
+openapi: 3.0.3
+info:
+  title: Banking API
+  version: 0.1.0
+  description: JWT-protected SGD account operations. Liquibase runs separately from the
+    serving process. Actuator is isolated on loopback port 9000.
+servers:
+- url: http://localhost:8080
+  description: Local application; deployment uses the HTTPS ALB hostname.
+security:
+- bearerAuth: []
+paths:
+  /auth/token:
+    post:
+      operationId: issueToken
+      summary: Exchange configured Basic credentials for a 15-minute Bearer token
+      description: No request body. The server selects the subject; clients cannot choose claims or token lifetime.
+      security:
+      - basicAuth: []
+      responses:
+        '200':
+          description: RS256 access token. Responses must not be cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            Pragma:
+              schema:
+                type: string
+                enum: [no-cache]
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, expires_in]
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    enum: [Bearer]
+                  expires_in:
+                    type: integer
+                    enum: [900]
+        '401':
+          description: Missing or invalid Basic credentials.
+  /accounts/{id}/balance:
+    get:
+      operationId: balance
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current balance, or the original result for an identical idempotent
+            retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balance'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid JWT.
+        '404':
+          description: Unknown or unowned account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Redacted server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /accounts/{id}/deposits:
+    post:
+      operationId: deposits
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{1,128}$
+        description: Scoped to the account; replay returns the original balance. Different
+          operation or amount for the same key returns 409.
+      responses:
+        '200':
+          description: Current balance, or the original result for an identical idempotent
+            retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balance'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid JWT.
+        '404':
+          description: Unknown or unowned account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Redacted server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Insufficient funds, balance limit, or idempotency conflict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Money'
+  /accounts/{id}/withdrawals:
+    post:
+      operationId: withdrawals
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{1,128}$
+        description: Scoped to the account; replay returns the original balance. Different
+          operation or amount for the same key returns 409.
+      responses:
+        '200':
+          description: Current balance, or the original result for an identical idempotent
+            retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balance'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid JWT.
+        '404':
+          description: Unknown or unowned account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Redacted server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Insufficient funds, balance limit, or idempotency conflict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Money'
+  /livez:
+    get:
+      operationId: livez
+      security: []
+      responses:
+        '200':
+          description: Minimal public status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /readyz:
+    get:
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          description: Minimal public status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Database is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /version:
+    get:
+      operationId: version
+      security: []
+      responses:
+        '200':
+          description: Minimal public status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Version'
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: RS256 JWT
+  schemas:
+    Balance:
+      type: object
+      required:
+      - balance
+      - currency
+      properties:
+        balance:
+          type: number
+          example: 100.0
+        currency:
+          type: string
+          enum:
+          - SGD
+    Money:
+      type: object
+      required:
+      - amount
+      properties:
+        amount:
+          type: number
+          minimum: 0.01
+          maximum: 99999999999999999.99
+          multipleOf: 0.01
+          description: Positive decimal with at most 17 integer digits and 2 fractional
+            digits. Send decimal JSON numbers.
+    Error:
+      type: object
+      required:
+      - code
+      properties:
+        code:
+          type: string
+    Health:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          enum:
+          - UP
+          - DOWN
+    Version:
+      type: object
+      required:
+      - version
+      - source
+      properties:
+        version:
+          type: string
+        source:
+          type: string

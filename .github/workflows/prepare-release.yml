@@ -1,0 +1,88 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Release increment (first patch finalizes the initial SNAPSHOT)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Create repository-scoped release App token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
+      - name: Choose final version and edit the project POM
+        id: version
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          BUMP: ${{ inputs.bump }}
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          script: |
+            const fs = require('node:fs');
+            const policy = require('./.github/scripts/release.cjs');
+            const repo = context.repo;
+            const releases = await github.paginate(github.rest.repos.listReleases, {...repo, per_page: 100});
+            const prs = await github.paginate(github.rest.pulls.list, {...repo, state: 'open', base: 'main', per_page: 100});
+            const xml = fs.readFileSync('pom.xml', 'utf8');
+            const current = policy.readPomVersion(xml);
+            const version = policy.preparationVersion(current, releases, prs, process.env.BUMP);
+            try {
+              await github.rest.git.getRef({...repo, ref: `tags/v${version}`});
+              throw new Error(`Tag v${version} already exists`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            fs.writeFileSync('pom.xml', policy.replacePomVersion(xml, current, version));
+            core.setOutput('version', version);
+      - name: Open release-preparation PR
+        id: pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          token: ${{ steps.app.outputs.token }}
+          base: main
+          branch: release/prepare-v${{ steps.version.outputs.version }}
+          add-paths: pom.xml
+          sign-commits: true
+          commit-message: 'chore: prepare release v${{ steps.version.outputs.version }}'
+          title: 'Prepare release v${{ steps.version.outputs.version }}'
+          body: |
+            Finalize the committed Maven project version as `${{ steps.version.outputs.version }}`.
+
+            Merge after the normal PR checks pass. The merge's Application CI run tests, builds, scans, and publishes the final-version Docker image. Then dispatch **Create release** with that successful run ID to record the existing image; deployment is a separate step.
+
+            <!-- release-preparation:v${{ steps.version.outputs.version }} -->
+      - name: Summarize release preparation
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_URL: ${{ steps.pr.outputs.pull-request-url }}
+        with:
+          script: |
+            await core.summary.addHeading('Release preparation')
+              .addLink('Review and merge the version PR', process.env.PR_URL)
+              .addRaw('\n\nAfter its main CI succeeds, run Create release with that CI run ID.\n').write();
