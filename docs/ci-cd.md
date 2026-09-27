@@ -47,6 +47,7 @@ Runner access is a separate control from a job's `if` condition: a PR can propos
 | `AWS_BUILD_ROLE_ARN` | OIDC build role with authorization-token access and push permissions scoped to the application ECR repository. |
 | `AWS_REGION` | AWS region containing the private ECR repository. |
 | `IMAGE_REPOSITORY` | Private ECR destination, such as `123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/banking-dev/banking-api`; no scheme or tag. |
+| `DEPLOYMENT_REPOSITORY` | Deployment workflow repository as `OWNER/REPOSITORY`. The setup menu configures it; if unset, summary links use the application owner's `deployment` repository. |
 | `RELEASE_APP_ID` | ID of a GitHub App installed on this application repository. |
 
 Store the App's private key as repository secret `RELEASE_APP_PRIVATE_KEY`. Give that App **Contents: read and write**, **Pull requests: read and write**, **Actions: read**, **Workflows: read and write**, and its default metadata access, limited to this repository. Workflows permission lets release creation tag the selected historical commit when its workflow files differ from current main; preparation does not request this permission. The workflows mint short-lived installation tokens. GitHub App tokens are used for PR creation so the resulting PRs trigger normal CI; events from the default `GITHUB_TOKEN` generally do not trigger another workflow. Do not give the App bypass permissions for required review or auto-merge release PRs.
@@ -63,6 +64,12 @@ Apply the deployment Terraform as an operator before the first publication to cr
 6. **Deploy separately.** Use the permanent release manifest's `image` and `source_sha` as inputs to the deployment repository's existing manual deployment workflow, together with its independently validated Alloy digest. That workflow owns migration, health verification and rollback. A GitHub Release is a recorded deliverable, not evidence that it is running anywhere.
 
 Release manifests are the authoritative version-to-digest mapping. CI publishes unique SHA/run tags, not mutable `latest` or reusable snapshot tags. Deployment must use `repository@sha256:...`; it does not resolve a moving Docker tag. ECR tags identify CI builds; GitHub Releases map semantic versions to image digests.
+
+### Copy deployment inputs from the summary
+
+After **Application CI** publishes, open its run summary for the exact `image` and `source_sha`, version, source CI link and downloadable `image-manifest`. **Create release** shows the same handoff for its selected manifest, even if the current main branch has advanced. Both summaries include all five deployment input names and a `gh workflow run` command. Replace the clearly marked `alloy_image` placeholder with the digest from a successful **Publish Alloy** run in the deployment repository. That separate workflow builds, validates, scans and publishes the collector and uploads `alloy-image-manifest-RUN_ID-ATTEMPT`.
+
+Use `action=deploy` and `first_release=false` for normal releases. Set `first_release=true` only for the initial deployment after database bootstrap. The application's SHA must come from the same manifest as its image; the Alloy manifest's `alloy_source_sha` identifies a different repository and must not be used as deployment's `source_sha`. Publication alone does not deploy the service. AWS roles, state, API settings and environment secrets are configured once in the deployment repository, as described in its setup guide.
 
 If a workflow fails after recording a release but before opening the next-snapshot PR, rerun the same release creation with the same successful CI run; it may repair the missing follow-up only when the existing tag and manifest match. Do not select another build of the same version. A rerun of CI produces a new run attempt and image tag; release validation rejects mismatched attempts.
 
