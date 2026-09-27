@@ -1,10 +1,10 @@
-name: Create release
+name: C. Create Release
 
 on:
   workflow_dispatch:
     inputs:
       ci-run-id:
-        description: Successful Application CI run ID for the merged release-preparation PR
+        description: Successful A. Application CI run ID for the merged release-preparation PR
         type: string
         required: true
 

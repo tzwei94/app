@@ -1,4 +1,4 @@
-# Application CI and Maven releases
+# A. Application CI and Maven releases
 
 The Maven project version is committed in `pom.xml` and embedded in Spring Boot build information. `/version` reports that value plus `SOURCE_SHA`. A Docker tag never changes the version inside a built JAR.
 
@@ -6,18 +6,18 @@ The Maven project version is committed in `pom.xml` and embedded in Spring Boot 
 
 | Workflow | Trigger | Responsibility |
 |---|---|---|
-| `app-ci.yml` — Application CI | Every push to `main`; PRs targeting `main` | Calls the reusable checks, build and publication workflows. |
+| `app-ci.yml` — A. Application CI | Every push to `main`; PRs targeting `main` | Calls the reusable checks, build and publication workflows. |
 | `lint.yml` | `workflow_call` | Validates workflow YAML and OpenAPI, checks Java with Checkstyle, and tests release/image policy. |
 | `test.yml` | `workflow_call` | Runs Maven verification and the real PostgreSQL acceptance suite; uploads reports. |
 | `build-image.yml` | `workflow_call`, after lint and tests | Builds the Linux AMD64 image once, scans that archive with Trivy, and passes it to publication as an Actions artifact. |
 | `publish.yml` | `workflow_call`, trusted main pushes only | Verifies the archive's image ID, SHA, platform, labels and packaged Maven version; pushes it to Amazon ECR and saves its digest. |
-| `prepare-release.yml` — Prepare release | Manual on `main` | Proposes a patch, minor or major release through a POM-version PR. |
-| `release.yml` — Create release | Manual on `main`, with a successful CI run ID | Validates the prepared release and CI manifest, tags the exact commit, attaches the manifest to a GitHub Release, and proposes the next snapshot. |
+| `prepare-release.yml` — B. Prepare Release | Manual on `main` | Proposes a patch, minor or major release through a POM-version PR. |
+| `release.yml` — C. Create Release | Manual on `main`, with a successful CI run ID | Validates the prepared release and CI manifest, tags the exact commit, attaches the manifest to a GitHub Release, and proposes the next snapshot. |
 
 ```mermaid
 flowchart TD
-    Push[Push to main or open PR] --> CI[Application CI]
-    CI --> Lint[Lint]
+    Push[Push to main or open PR] --> CI[A. Application CI]
+    CI --> Lint[Reusable: Lint]
     CI --> Test[PostgreSQL tests]
     Lint --> Build[Build image and scan archive]
     Test --> Build
@@ -57,9 +57,9 @@ Apply the deployment Terraform as an operator before the first publication to cr
 ## Version and release lifecycle
 
 1. **Develop.** The initial POM is `0.1.0-SNAPSHOT`. Every main push is tested and published under a unique tag containing its full source SHA, run ID and attempt. Multiple builds may have the same snapshot version; their SHA, run and digest distinguish them.
-2. **Prepare.** Open Actions → **Prepare release** → Run workflow on `main`. Choose `patch` (default), `minor` or `major`. Review the resulting POM-only release PR before merging. With no prior stable release, patch finalizes the current snapshot (`0.1.0-SNAPSHOT` → `0.1.0`). After release `0.1.0`, the next patch is `0.1.1`; minor is `0.2.0`, major is `1.0.0`. A proposed version is not a published release.
+2. **Prepare.** Open Actions → **B. Prepare Release** → Run workflow on `main`. Choose `patch` (default), `minor` or `major`. Review the resulting POM-only release PR before merging. With no prior stable release, patch finalizes the current snapshot (`0.1.0-SNAPSHOT` → `0.1.0`). After release `0.1.0`, the next patch is `0.1.1`; minor is `0.2.0`, major is `1.0.0`. A proposed version is not a published release.
 3. **Build the final version.** Merge the preparation PR. The main-push CI builds the JAR with the committed final Maven version, scans the image and publishes it. If CI fails, fix the failure before releasing; never promote a failed or snapshot build. Select the exact CI run for the merged preparation commit, even if main later advances.
-4. **Create the release.** Open **Create release** on `main`, enter that CI run ID, and run it. It validates successful main-push provenance, preparation-PR association, POM version and the manifest's repository, SHA, run/attempt and image digest. It creates `vVERSION` at that exact source commit and a GitHub Release carrying `image-manifest.json`. Existing mappings must match exactly; a version must never be moved to another commit or image. No application rebuild or deployment occurs.
+4. **Create the release.** Open **C. Create Release** on `main`, enter that CI run ID, and run it. It validates successful main-push provenance, preparation-PR association, POM version and the manifest's repository, SHA, run/attempt and image digest. It creates `vVERSION` at that exact source commit and a GitHub Release carrying `image-manifest.json`. Existing mappings must match exactly; a version must never be moved to another commit or image. No application rebuild or deployment occurs.
 5. **Resume development.** The release workflow opens a PR changing the current final POM version to the next patch snapshot. Merge it promptly. If main already moved to a different version, the workflow must preserve that newer state. Prepare releases one at a time.
 6. **Deploy separately.** Use the permanent release manifest's `image` and `source_sha` as inputs to the deployment repository's existing manual deployment workflow, together with its independently validated Alloy digest. That workflow owns migration, health verification and rollback. A GitHub Release is a recorded deliverable, not evidence that it is running anywhere.
 
@@ -67,7 +67,7 @@ Release manifests are the authoritative version-to-digest mapping. CI publishes 
 
 ### Copy deployment inputs from the summary
 
-After **Application CI** publishes, open its run summary for the exact `image` and `source_sha`, version, source CI link and downloadable `image-manifest`. **Create release** shows the same handoff for its selected manifest, even if the current main branch has advanced. Both summaries include all five deployment input names and a `gh workflow run` command. Replace the clearly marked `alloy_image` placeholder with the digest from a successful **Publish Alloy** run in the deployment repository. That separate workflow builds, validates, scans and publishes the collector and uploads `alloy-image-manifest-RUN_ID-ATTEMPT`.
+After **A. Application CI** publishes, open its run summary for the exact `image` and `source_sha`, version, source CI link and downloadable `image-manifest`. **C. Create Release** shows the same handoff for its selected manifest, even if the current main branch has advanced. Both summaries include all five deployment input names and a `gh workflow run` command. Replace the clearly marked `alloy_image` placeholder with the digest from a successful **Publish Alloy** run in the deployment repository. That separate workflow builds, validates, scans and publishes the collector and uploads `alloy-image-manifest-RUN_ID-ATTEMPT`.
 
 Use `action=deploy` and `first_release=false` for normal releases. Set `first_release=true` only for the initial deployment after database bootstrap. The application's SHA must come from the same manifest as its image; the Alloy manifest's `alloy_source_sha` identifies a different repository and must not be used as deployment's `source_sha`. Publication alone does not deploy the service. AWS roles, state, API settings and environment secrets are configured once in the deployment repository, as described in its setup guide.
 
