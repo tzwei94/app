@@ -218,6 +218,7 @@ paths:
               properties:
                 workMs:
                   type: integer
+                  nullable: true
                   minimum: 50
                   maximum: 500
                   default: 250

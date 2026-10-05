@@ -58,5 +58,10 @@ class CpuDemoSecurityTest extends CpuDemoHttpSupport {
             .andExpect(header().string("Retry-After", "1")).andExpect(jsonPath("code").value("cpu_demo_busy"));
         http.perform(get("/livez")).andExpect(status().isOk());
         http.perform(asyncDispatch(first)).andExpect(status().isOk()).andExpect(jsonPath("workMs").value(250));
+        Thread.sleep(120);
+        var explicitNull = http.perform(post("/demo/cpu").header("Authorization", bearer("alice"))
+            .contentType("application/json").content("{\"workMs\":null}"))
+            .andExpect(request().asyncStarted()).andReturn();
+        http.perform(asyncDispatch(explicitNull)).andExpect(status().isOk()).andExpect(jsonPath("workMs").value(250));
     }
 }
