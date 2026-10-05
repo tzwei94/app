@@ -6,6 +6,7 @@ import java.security.interfaces.RSAPublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.Base64;
+import dev.banking.user.domain.UserRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,9 +18,10 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.core.*;
 import org.springframework.security.oauth2.jwt.*;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
@@ -31,34 +33,41 @@ class SecurityConfiguration {
         return key;
     }
     @Bean JwtDecoder jwtDecoder(RSAPrivateCrtKey signingKey,
-            @Value("${banking.jwt.issuer}") String issuer, @Value("${banking.jwt.audience}") String audience) throws Exception {
+            @Value("${banking.jwt.issuer}") String issuer, @Value("${banking.jwt.audience}") String audience, UserRepository users) throws Exception {
         var key = (RSAPublicKey) KeyFactory.getInstance("RSA").generatePublic(new RSAPublicKeySpec(signingKey.getModulus(), signingKey.getPublicExponent()));
         var decoder = NimbusJwtDecoder.withPublicKey(key).build();
         OAuth2TokenValidator<Jwt> claims = jwt -> jwt.getAudience() != null && jwt.getAudience().contains(audience)
                 && jwt.getSubject() != null && !jwt.getSubject().isBlank() && jwt.getExpiresAt() != null
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token"));
-        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(JwtValidators.createDefaultWithIssuer(issuer), claims));
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(JwtValidators.createDefaultWithIssuer(issuer), claims, new UserTokenValidator(users)));
         return decoder;
     }
+    @Bean PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
     @Bean @Order(1) SecurityFilterChain tokenSecurity(HttpSecurity http,
-            @Value("${banking.token.username}") String username, @Value("${banking.token.password}") String password) throws Exception {
+            @Value("${banking.token.username}") String username, @Value("${banking.token.password}") String password,
+            PasswordEncoder encoder, UserRepository directory) throws Exception {
         if (username.isBlank() || username.contains(":") || password.isBlank())
             throw new IllegalArgumentException("Configure nonempty TOKEN_USERNAME (without colon) and TOKEN_PASSWORD");
-        var encoder = new BCryptPasswordEncoder();
-        var users = new InMemoryUserDetailsManager(User.withUsername(username).password(encoder.encode(password)).roles("TOKEN").build());
-        var provider = new DaoAuthenticationProvider(users);
+        var administrator = User.withUsername(username).password(encoder.encode(password)).roles("ADMIN").build();
+        var provider = new DaoAuthenticationProvider(login -> {
+            // Authentication erases the returned principal's password; keep the template intact.
+            if (login.equals(username)) return User.withUserDetails(administrator).build();
+            return directory.credentials(login).map(ManagedUserDetails::new)
+                .orElseThrow(() -> new UsernameNotFoundException("Invalid login"));
+        });
         provider.setPasswordEncoder(encoder);
         return http.securityMatcher("/auth/token").csrf(c -> c.disable())
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .requestCache(c -> c.disable())
             .authenticationManager(new ProviderManager(provider))
-            .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST, "/auth/token").hasRole("TOKEN").anyRequest().denyAll())
+            .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST, "/auth/token").hasAnyRole("ADMIN", "USER").anyRequest().denyAll())
             .httpBasic(b -> b.realmName("banking-token")).build();
     }
     @Bean @Order(2) SecurityFilterChain security(HttpSecurity http) throws Exception {
         return http.csrf(c -> c.disable()).sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(a -> a.requestMatchers("/readyz", "/livez", "/version", "/actuator/health", "/actuator/prometheus").permitAll().anyRequest().authenticated())
+            .authorizeHttpRequests(a -> a.requestMatchers("/readyz", "/livez", "/version", "/actuator/health", "/actuator/prometheus").permitAll()
+                .requestMatchers("/users", "/users/**").hasAuthority("SCOPE_users:manage").anyRequest().authenticated())
             .oauth2ResourceServer(o -> o.jwt(j -> {})).build();
     }
 }

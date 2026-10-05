@@ -1,4 +1,4 @@
-name: Prepare release
+name: B. Prepare Release
 
 on:
   workflow_dispatch:
@@ -74,7 +74,7 @@ jobs:
           body: |
             Finalize the committed Maven project version as `${{ steps.version.outputs.version }}`.
 
-            Merge after the normal PR checks pass. The merge's Application CI run tests, builds, scans, and publishes the final-version Docker image. Then dispatch **Create release** with that successful run ID to record the existing image; deployment is a separate step.
+            Merge after the normal PR checks pass. The merge's A. Application CI run tests, builds, scans, and publishes the final-version Docker image. Then dispatch **C. Create Release** with that successful run ID to record the existing image; deployment is a separate step.
 
             <!-- release-preparation:v${{ steps.version.outputs.version }} -->
       - name: Summarize release preparation
@@ -85,4 +85,4 @@ jobs:
           script: |
             await core.summary.addHeading('Release preparation')
               .addLink('Review and merge the version PR', process.env.PR_URL)
-              .addRaw('\n\nAfter its main CI succeeds, run Create release with that CI run ID.\n').write();
+              .addRaw('\n\nAfter its main CI succeeds, run C. Create Release with that CI run ID.\n').write();

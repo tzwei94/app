@@ -1,4 +1,4 @@
-name: Publish scanned image
+name: IV. Publish Scanned Image
 
 on:
   workflow_call:
@@ -116,12 +116,8 @@ jobs:
               repository: `${context.repo.owner}/${context.repo.repo}`, run_id: context.runId,
               run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT), workflow: 'app-ci.yml'};
             fs.writeFileSync('image-manifest.json', JSON.stringify(manifest, null, 2) + '\n');
-            await core.summary.addHeading('Published image').addTable([
-              [{data: 'Version', header: true}, manifest.version],
-              [{data: 'Source commit', header: true}, manifest.source_sha],
-              [{data: 'Image digest', header: true}, manifest.image]
-            ]).addRaw('CI ends here. Use Prepare release or Create release to select a version; deployment is separate.').write();
       - name: Save release input
+        id: manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-manifest
@@ -129,6 +125,19 @@ jobs:
           if-no-files-found: error
           retention-days: 90
           overwrite: true
+      - name: Show deployment inputs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          DEPLOYMENT_REPOSITORY: ${{ vars.DEPLOYMENT_REPOSITORY }}
+          MANIFEST_URL: ${{ steps.manifest.outputs.artifact-url }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { deploymentSummary } = require('./.github/scripts/image.cjs');
+            const manifest = JSON.parse(fs.readFileSync('image-manifest.json', 'utf8'));
+            await core.summary.addHeading('Application image published')
+              .addRaw(deploymentSummary(manifest, {deploymentRepository: process.env.DEPLOYMENT_REPOSITORY,
+                manifestUrl: process.env.MANIFEST_URL, serverUrl: process.env.GITHUB_SERVER_URL})).write();
       - name: Remove job registry credentials
         if: always() && steps.destination.outcome == 'success'
         run: rm -rf -- "$DOCKER_CONFIG"

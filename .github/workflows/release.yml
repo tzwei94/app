@@ -1,10 +1,10 @@
-name: Create release
+name: C. Create Release
 
 on:
   workflow_dispatch:
     inputs:
       ci-run-id:
-        description: Successful Application CI run ID for the merged release-preparation PR
+        description: Successful A. Application CI run ID for the merged release-preparation PR
         type: string
         required: true
 
@@ -106,6 +106,7 @@ jobs:
             const policy = require('./.github/scripts/release.cjs');
             const manifest = JSON.parse(fs.readFileSync('.release/image-manifest.json', 'utf8'));
             core.setOutput('url', await policy.publishRelease(github, context.repo, manifest));
+            fs.copyFileSync('.release/image-manifest.json', `${process.env.RUNNER_TEMP}/release-image-manifest.json`);
       - name: Check out current main for the next-development PR
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -150,12 +151,16 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           RELEASE_URL: ${{ steps.publish.outputs.url }}
-          IMAGE: ${{ steps.candidate.outputs.image }}
           NEXT_PR: ${{ steps.pr.outputs.pull-request-url }}
+          DEPLOYMENT_REPOSITORY: ${{ vars.DEPLOYMENT_REPOSITORY }}
         with:
           script: |
+            const fs = require('node:fs');
+            const { deploymentSummary } = require('./.github/scripts/image.cjs');
+            const manifest = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/release-image-manifest.json`, 'utf8'));
+            const manifestUrl = `${process.env.GITHUB_SERVER_URL}/${manifest.repository}/releases/download/v${manifest.version}/image-manifest.json`;
             core.summary.addHeading('Release recorded').addLink('GitHub release', process.env.RELEASE_URL)
-              .addCodeBlock(process.env.IMAGE)
-              .addRaw('\nUse the release manifest in the separate deployment workflow.\n');
+              .addRaw('\n' + deploymentSummary(manifest, {deploymentRepository: process.env.DEPLOYMENT_REPOSITORY,
+                manifestUrl, serverUrl: process.env.GITHUB_SERVER_URL}));
             if (process.env.NEXT_PR) core.summary.addLink('Review next-development PR', process.env.NEXT_PR);
             await core.summary.write();

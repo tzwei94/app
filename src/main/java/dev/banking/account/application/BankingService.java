@@ -3,6 +3,7 @@ import dev.banking.account.domain.*;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
 import java.util.UUID;
+import java.util.List;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,6 +17,7 @@ public class BankingService {
         return accounts.findOwned(id, subject, lock).orElseThrow(() -> new BankingFailure(404, "account_not_found"));
     }
     public Balance balance(UUID id, String subject) { return account(id, subject, false); }
+    public List<AccountSummary> list(String subject, int limit, int offset) { return accounts.findAllOwned(subject, limit, offset); }
     @Transactional
     public Balance mutate(UUID id, String subject, String kind, BigDecimal amount, String key) {
         var current = account(id, subject, true);

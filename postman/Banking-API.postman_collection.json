@@ -128,7 +128,7 @@
               ]
             },
             "url": "{{base_url}}/auth/token",
-            "description": "HTTP Basic login. No request body. Saves api_token into the selected environment for later banking requests."
+            "description": "HTTP Basic login using the configured administrator or a managed user. No body. Saves api_token for later requests."
           },
           "event": [
             {
@@ -345,6 +345,27 @@
           ]
         },
         {
+          "name": "List owned accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/accounts/list?limit=50&offset=0",
+            "description": "Lists only the authenticated subject's accounts; response fields are id, balance and currency."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Safe account summaries\", () => { pm.expect(pm.response.json()).to.be.an(\"array\"); pm.response.json().forEach(account => pm.expect(Object.keys(account).sort()).to.eql([\"balance\", \"currency\", \"id\"])); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Reject missing token",
           "request": {
             "method": "GET",
@@ -361,6 +382,283 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Authentication required\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "User management (creates and deletes a synthetic user)",
+      "item": [
+        {
+          "name": "Create synthetic user",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/users",
+            "description": "Administrator only. Generates a temporary username/password and stores the returned user ID.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{managed_username}}\",\n  \"displayName\": \"Postman User\",\n  \"password\": \"{{managed_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"managed_username\", \"postman-\" + pm.variables.replaceIn(\"{{$randomUUID}}\"));",
+                  "pm.environment.set(\"managed_password\", \"temporary-\" + pm.variables.replaceIn(\"{{$randomUUID}}\"));",
+                  "pm.environment.unset(\"managed_user_id\");",
+                  "pm.environment.unset(\"managed_api_token\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Safe user profile\", () => pm.expect(Object.keys(pm.response.json()).sort()).to.eql([\"displayName\", \"id\", \"username\"]));",
+                  "if (pm.response.code === 201) pm.environment.set(\"managed_user_id\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/users?limit=50&offset=0",
+            "description": "Administrator only; profiles exclude passwords and hashes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Safe user directory\", () => { pm.expect(pm.response.json()).to.be.an(\"array\"); pm.response.json().forEach(user => pm.expect(Object.keys(user).sort()).to.eql([\"displayName\", \"id\", \"username\"])); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read user",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/users/{{managed_user_id}}",
+            "description": "Administrator reads the user just created."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Safe user profile\", () => pm.expect(Object.keys(pm.response.json()).sort()).to.eql([\"displayName\", \"id\", \"username\"]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get managed-user token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{base_url}}/auth/token",
+            "description": "Individual Basic login; saves managed_api_token without replacing the administrator api_token.",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{managed_username}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{managed_password}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.environment.set(\"managed_api_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List managed-user accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/accounts/list",
+            "description": "A newly created user has no accounts.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{managed_api_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"No accounts created implicitly\", () => pm.expect(pm.response.json()).to.eql([]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject directory access as managed user",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/users",
+            "description": "Managed users lack the administrative scope.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{managed_api_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update user",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/users/{{managed_user_id}}",
+            "description": "Administrator replaces profile fields without changing the password.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{managed_username}}\",\n  \"displayName\": \"Postman User Updated\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Safe user profile\", () => pm.expect(Object.keys(pm.response.json()).sort()).to.eql([\"displayName\", \"id\", \"username\"]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete user",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{base_url}}/users/{{managed_user_id}}",
+            "description": "Administrator soft-deletes the synthetic user; existing banking data is retained."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject deleted-user token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/accounts/list",
+            "description": "Deletion revokes the previously issued managed-user token.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{managed_api_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));"
                 ]
               }
             }

@@ -1,4 +1,4 @@
-name: Build and scan image
+name: III. Build and Scan Image
 
 on:
   workflow_call:

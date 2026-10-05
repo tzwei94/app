@@ -1,9 +1,12 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>4.1.1</version><relativePath/></parent>
-  <groupId>dev.banking</groupId><artifactId>banking-api</artifactId><version>0.1.0-SNAPSHOT</version>
+  <groupId>dev.banking</groupId><artifactId>banking-api</artifactId><version>1.0.3</version>
   <properties>
     <java.version>25</java.version>
+    <!-- Patch both Jackson release families required by the existing image scan. -->
+    <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
     <!-- Boot 4.1.1 manages 11.0.24; use the patched Tomcat 11 release. -->
     <tomcat.version>11.0.26</tomcat.version>
   </properties>

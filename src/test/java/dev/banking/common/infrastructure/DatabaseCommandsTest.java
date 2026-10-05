@@ -54,11 +54,14 @@ class DatabaseCommandsTest {
     @Test void rollbackRemovesSchemaAndMigrationCanReapply()throws Exception {
         run(true,"migrate");
         assertThat(query("SELECT count(*) FROM banking_accounts")).isEqualTo("1");
-        run(true,"rollback","1");
+        run(true,"rollback","2");
         assertThat(query("SELECT to_regclass('banking_accounts')")).isNull();
         assertThat(query("SELECT to_regclass('banking_operations')")).isNull();
         assertThat(query("SELECT count(*) FROM databasechangelog")).isEqualTo("0");
         run(true,"migrate");
+        assertThat(query("SELECT balance FROM banking_accounts")).isEqualTo("100.00");
+        run(true,"rollback");
+        assertThat(query("SELECT to_regclass('banking_users')")).isNull();
         assertThat(query("SELECT balance FROM banking_accounts")).isEqualTo("100.00");
         run(true,"rollback");
         assertThat(query("SELECT to_regclass('banking_accounts')")).isNull();
@@ -73,18 +76,29 @@ class DatabaseCommandsTest {
             assertThat(query("SELECT md5sum FROM databasechangelog")).isNull();
             assertThat(query("SELECT balance FROM banking_accounts")).isEqualTo("123.45");
             run(true,"migrate");
-            assertThat(query("SELECT count(*) FROM databasechangelog")).isEqualTo("1");
+            assertThat(query("SELECT count(*) FROM databasechangelog")).isEqualTo("2");
             assertThat(query("SELECT balance FROM banking_accounts")).isEqualTo("123.45");
         }
     }
     @Test void invalidCommandsCannotModifyAnAppliedSchema()throws Exception {
         run(true,"migrate");
-        for(var count:List.of("0","-1","2","abc","2147483648")) run(false,"rollback",count);
+        for(var count:List.of("0","-1","3","abc","2147483648")) run(false,"rollback",count);
         run(false,"rollback","1","extra");
         run(false,"clear-checksums","extra");
         run(false,"migrate","extra");
         run(false,"rollbak");
-        assertThat(query("SELECT count(*) FROM databasechangelog")).isEqualTo("1");
+        assertThat(query("SELECT count(*) FROM databasechangelog")).isEqualTo("2");
         assertThat(query("SELECT balance FROM banking_accounts")).isEqualTo("100.00");
+    }
+    @Test void userMigrationCanRollbackAndReapplyWithoutChangingBankingData()throws Exception {
+        run(true,"migrate");
+        try(var db=DriverManager.getConnection(url,"banking_test",System.getenv("BANK_TEST_DB_PASSWORD"));
+            var statement=db.createStatement()) {statement.execute("UPDATE banking_accounts SET balance=234.56");}
+        run(true,"rollback","1");
+        assertThat(query("SELECT to_regclass('banking_users')")).isNull();
+        assertThat(query("SELECT balance FROM banking_accounts")).isEqualTo("234.56");
+        run(true,"migrate");
+        assertThat(query("SELECT count(*) FROM banking_users")).isEqualTo("0");
+        assertThat(query("SELECT balance FROM banking_accounts")).isEqualTo("234.56");
     }
 }

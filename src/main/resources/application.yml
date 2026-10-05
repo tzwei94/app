@@ -34,6 +34,9 @@ management:
     tags:
       application: banking-api
 banking:
+  demo:
+    cpu:
+      enabled: ${CPU_DEMO_ENABLED:false}
   token:
     username: ${TOKEN_USERNAME:}
     password: ${TOKEN_PASSWORD:}
