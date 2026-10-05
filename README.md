@@ -131,3 +131,34 @@ Maven Wrapper generation and checksum support follow the [Apache Maven documenta
 See [test coverage and verification commands](docs/local-verification.md).
 
 Token authentication uses separate Spring Security filter chains for Basic login and Bearer API requests; see [Spring Security authentication](https://docs.spring.io/spring-security/reference/servlet/authentication/passwords/dao-authentication-provider.html).
+# CPU scaling demonstration
+
+`POST /demo/cpu` accepts JSON `{"workMs":250}` (50–500 integer milliseconds;
+omitted/null workMs defaults to 250). It uses the existing JWT authentication,
+with no special subject restriction. Work is fixed-size SHA-256 hashing only:
+no database reads/writes or external calls. One dedicated worker per task, zero
+queue capacity and a 100 ms recovery gap bound resource use. Busy requests return
+429 with `Retry-After: 1`; invalid bounds return 400, disabled work returns 404,
+and timeout/shutdown/cancellation returns 503. Responses are not cached.
+
+The base app defaults `CPU_DEMO_ENABLED=false`; the demo Terraform environment
+sets it to true. Other module consumers stay disabled unless explicitly enabled.
+The worker checks a monotonic deadline (including scheduling delay), cancellation
+and interruption every 256 hashes, and never exceeds 5,000,000 hashes. Scheduling
+and one batch can cause small deadline overshoot. Work cancels on async timeout,
+observable disconnect/error and app shutdown; disconnect detection is not immediate,
+so the worker's own deadline remains the safety limit.
+
+Responses include `elapsedMs`, measured `cpuMs`, `iterations`, a checksum, and the
+stop reason. Under Fargate throttling, 500 ms wall time can contain substantially
+less CPU time; unsupported CPU accounting reports zero. Micrometer exposes
+`banking.demo.cpu.active`, `.completed`, `.rejected`, `.cancelled`, `.failed` and
+`.duration` through the existing private Prometheus endpoint, without user labels.
+CPU is shared with normal requests despite the dedicated executor and recovery
+gap. Monitor normal latency and ALB health; do not assume latency isolation.
+
+Use the separate `k6/cpu-demo.js` workload in the parent assignment project, not
+the mixed banking workload. Its default smoke makes one 50 ms CPU request. The
+optional load profile is capped at 4 CPU requests/sec, 8 total VUs and 5 minutes,
+and distinguishes expected 429 rejections from unexpected errors. Sustained live
+load requires separate target/ceiling approval; deploying the route does not run it.

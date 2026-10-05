@@ -198,6 +198,61 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/Money'
+  /demo/cpu:
+    post:
+      operationId: cpuDemo
+      summary: Run bounded CPU-only work to demonstrate ECS CPU scaling
+      description: >-
+        Normal JWT authentication is required. CPU_DEMO_ENABLED is enabled by the
+        demo deployment configuration and disabled in the base application.
+        One worker per task, no backlog, and a 100 ms recovery gap. SHA-256 hashes
+        use fixed-size reusable buffers; no database or external calls.
+        The monotonic deadline includes scheduling delay and is checked every
+        256 hashes. Scheduling and the final batch can cause deadline overshoot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workMs:
+                  type: integer
+                  nullable: true
+                  minimum: 50
+                  maximum: 500
+                  default: 250
+      responses:
+        '200':
+          description: Bounded work completed; cpuMs can be lower than elapsedMs under CPU throttling, or zero when unsupported.
+          headers:
+            Cache-Control:
+              schema: {type: string, enum: [no-store]}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workMs, elapsedMs, cpuMs, iterations, checksum, stopReason]
+                properties:
+                  workMs: {type: integer, minimum: 50, maximum: 500}
+                  elapsedMs: {type: number, minimum: 0}
+                  cpuMs: {type: number, minimum: 0}
+                  iterations: {type: integer, minimum: 0, maximum: 5000000}
+                  checksum: {type: string, pattern: '^[a-f0-9]{64}$'}
+                  stopReason: {type: string, enum: [deadline, iteration_limit]}
+        '400':
+          description: Invalid work amount or request body.
+        '401':
+          description: Missing or invalid JWT.
+        '404':
+          description: CPU demo is disabled.
+        '429':
+          description: Worker busy or in its recovery gap; code cpu_demo_busy. No work is queued.
+          headers:
+            Retry-After:
+              schema: {type: string, enum: ['1']}
+        '503':
+          description: Shutdown, cancellation or timeout; work stops cooperatively.
   /livez:
     get:
       operationId: livez

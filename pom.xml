@@ -4,6 +4,9 @@
   <groupId>dev.banking</groupId><artifactId>banking-api</artifactId><version>1.0.3-SNAPSHOT</version>
   <properties>
     <java.version>25</java.version>
+    <!-- Patch both Jackson release families required by the existing image scan. -->
+    <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
     <!-- Boot 4.1.1 manages 11.0.24; use the patched Tomcat 11 release. -->
     <tomcat.version>11.0.26</tomcat.version>
   </properties>

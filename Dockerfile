@@ -14,6 +14,9 @@ ARG SOURCE_SHA=local
 LABEL org.opencontainers.image.revision=$SOURCE_SHA
 ENV SOURCE_SHA=$SOURCE_SHA
 WORKDIR /app
+# Apply Jammy security fixes to the pinned runtime, including USN-8847-1.
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade openssl libssl3 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=certificates /rds-ca.pem /opt/app/certs/rds-ca.pem
 RUN mkdir -p /tmp /var/log/app \
     && chmod 755 /opt/app /opt/app/certs && chmod 644 /opt/app/certs/rds-ca.pem \
