@@ -13,8 +13,12 @@ paths:
   /auth/token:
     post:
       operationId: issueToken
-      summary: Exchange configured Basic credentials for a 15-minute Bearer token
-      description: No request body. The server selects the subject; clients cannot choose claims or token lifetime.
+      summary: Exchange administrator or managed-user Basic credentials for a 15-minute Bearer token
+      description: >-
+        No request body. The configured administrator receives TOKEN_SUBJECT and
+        the users:manage scope. Managed users receive their immutable user UUID
+        as subject, a credential version and no administrative scope. Clients
+        cannot choose claims or token lifetime. Deleted users cannot log in.
       security:
       - basicAuth: []
       responses:
@@ -45,6 +49,144 @@ paths:
                     enum: [900]
         '401':
           description: Missing or invalid Basic credentials.
+  /accounts/list:
+    get:
+      operationId: listOwnedAccounts
+      summary: List accounts owned by the authenticated subject
+      description: Ordered by account ID. Empty pages return an empty array; no other owner's records are returned.
+      parameters:
+      - $ref: '#/components/parameters/ListLimit'
+      - $ref: '#/components/parameters/ListOffset'
+      responses:
+        '200':
+          description: Owned account summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AccountSummary'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /users:
+    get:
+      operationId: listUsers
+      summary: List active managed users
+      description: >-
+        Requires an administrator JWT with users:manage scope. Ordered by
+        username and ID. The configured administrator is outside this managed
+        directory. Deleted users are excluded; empty pages return [].
+      parameters:
+      - $ref: '#/components/parameters/ListLimit'
+      - $ref: '#/components/parameters/ListOffset'
+      responses:
+        '200':
+          description: Safe user profiles; credential material is never returned.
+          headers:
+            Cache-Control: {schema: {type: string, enum: [no-store]}}
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/UserProfile'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/DirectoryForbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createUser
+      summary: Create a managed user with individual login credentials
+      description: >-
+        Requires users:manage scope. The server assigns an immutable UUID subject.
+        New users have no accounts and cannot manage the directory. The configured
+        administrator login name and deleted users' final usernames are reserved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUser'}
+      responses:
+        '201':
+          description: User created; password is hashed and never returned.
+          headers:
+            Location: {schema: {type: string}, description: Relative URL of the new user.}
+            Cache-Control: {schema: {type: string, enum: [no-store]}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserProfile'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/DirectoryForbidden'}
+        '409': {$ref: '#/components/responses/UserConflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /users/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    get:
+      operationId: getUser
+      summary: Read a managed user profile
+      description: Requires users:manage scope; deleted or unknown users return 404.
+      responses:
+        '200':
+          description: Safe user profile.
+          headers:
+            Cache-Control: {schema: {type: string, enum: [no-store]}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserProfile'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/DirectoryForbidden'}
+        '404': {$ref: '#/components/responses/UserNotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateUser
+      summary: Replace a user's username and display name, optionally resetting their password
+      description: >-
+        Requires users:manage scope. Username changes preserve the UUID subject
+        and account ownership. Omitted or null password keeps the current
+        password; a password change immediately revokes all previously issued
+        managed-user JWTs. Changing profile fields alone keeps tokens valid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateUser'}
+      responses:
+        '200':
+          description: Updated safe user profile.
+          headers:
+            Cache-Control: {schema: {type: string, enum: [no-store]}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserProfile'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/DirectoryForbidden'}
+        '404': {$ref: '#/components/responses/UserNotFound'}
+        '409': {$ref: '#/components/responses/UserConflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteUser
+      summary: Soft-delete a managed user and revoke their credentials
+      description: >-
+        Requires users:manage scope. Retains the user record, final username,
+        accounts and transaction ledger. Login and previously issued managed-user
+        JWTs stop working immediately. Deleting an unknown or already deleted
+        user returns 404.
+      responses:
+        '204':
+          description: User deleted; no response body.
+          headers:
+            Cache-Control: {schema: {type: string, enum: [no-store]}}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/DirectoryForbidden'}
+        '404': {$ref: '#/components/responses/UserNotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /accounts/{id}/balance:
     get:
       operationId: balance
@@ -303,7 +445,90 @@ components:
       type: http
       scheme: bearer
       bearerFormat: RS256 JWT
+  parameters:
+    ListLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    ListOffset:
+      name: offset
+      in: query
+      schema: {type: integer, minimum: 0, maximum: 2147483647, default: 0}
+  responses:
+    InvalidRequest:
+      description: Invalid request or pagination.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unauthorized:
+      description: Missing, invalid, expired or revoked credentials.
+    DirectoryForbidden:
+      description: JWT lacks the required users:manage scope.
+    UserNotFound:
+      description: User is unknown or deleted; code user_not_found.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    UserConflict:
+      description: Username already exists or is reserved; code username_exists or username_reserved.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    InternalError:
+      description: Redacted server failure.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
   schemas:
+    UserProfile:
+      type: object
+      additionalProperties: false
+      required: [id, username, displayName]
+      properties:
+        id: {type: string, format: uuid}
+        username: {type: string, pattern: '^[a-z][a-z0-9._-]{2,63}$'}
+        displayName: {type: string, minLength: 1, maxLength: 100}
+    CreateUser:
+      type: object
+      required: [username, displayName, password]
+      properties:
+        username: {type: string, pattern: '^[a-z][a-z0-9._-]{2,63}$'}
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Must contain at least one non-whitespace character.
+        password:
+          type: string
+          minLength: 12
+          maxLength: 72
+          writeOnly: true
+          description: Nonblank, at most 72 UTF-8 bytes. Stored as a BCrypt hash; never returned.
+    UpdateUser:
+      type: object
+      required: [username, displayName]
+      properties:
+        username: {type: string, pattern: '^[a-z][a-z0-9._-]{2,63}$'}
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Must contain at least one non-whitespace character.
+        password:
+          type: string
+          nullable: true
+          minLength: 12
+          maxLength: 72
+          writeOnly: true
+          description: Omit or use null to retain credentials; a nonblank password (at most 72 UTF-8 bytes) revokes old tokens.
+    AccountSummary:
+      type: object
+      additionalProperties: false
+      required: [id, balance, currency]
+      properties:
+        id: {type: string, format: uuid}
+        balance: {type: number, minimum: 0, example: 100.0}
+        currency: {type: string, enum: [SGD]}
     Balance:
       type: object
       required:

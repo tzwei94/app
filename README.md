@@ -1,6 +1,6 @@
 # Banking API
 
-A Spring Boot 4.1.1 application using Java 25, Maven and PostgreSQL. JWT-authenticated users can check balances, deposit and withdraw from accounts they own.
+A Spring Boot 4.1.1 application using Java 25, Maven and PostgreSQL. JWT-authenticated users can list their accounts, check balances, deposit and withdraw from accounts they own. The configured administrator manages a directory of users with individual logins.
 
 ## Run the tests
 
@@ -21,25 +21,39 @@ The smoke script generates a temporary signing key and Basic credentials, starts
 
 ## Try the API in Postman
 
-Import [the collection](postman/Banking-API.postman_collection.json) and [local environment template](postman/Local.postman_environment.json), then select the environment and set `base_url`, `token_username` and `token_password`. Send **Get token** to save `api_token` automatically. Docker uses an assigned host port; direct local JAR startup uses `http://localhost:8080`. See [Postman setup and request order](postman/README.md) for Basic login, idempotent retries, deployed HTTPS, and command-line execution. The collection covers every API endpoint and includes response assertions; its default banking sequence deposits and withdraws SGD 1.
+Import [the collection](postman/Banking-API.postman_collection.json) and [local environment template](postman/Local.postman_environment.json), then select the environment and set `base_url`, `token_username` and `token_password`. Send **Get token** to save `api_token` automatically. Docker uses an assigned host port; direct local JAR startup uses `http://localhost:8080`. See [Postman setup and request order](postman/README.md) for Basic login, idempotent retries, deployed HTTPS, and command-line execution. The collection covers banking, authentication, health and user-management endpoints and includes response assertions. Its banking sequence deposits and withdraws SGD 1; its user-management sequence creates and soft-deletes a synthetic user.
 
 ## API contract
 
-All banking endpoints require `Authorization: Bearer <RS256 JWT>`. Validate the configured issuer, audience, expiration and nonempty subject. `POST /auth/token` requires HTTP Basic credentials from `TOKEN_USERNAME` and `TOKEN_PASSWORD` and returns `{access_token, token_type, expires_in}`. Tokens last 900 seconds and use the configured `TOKEN_SUBJECT` (default `alice`), never a caller-supplied subject. Basic credentials cannot access banking endpoints. `JWT_PRIVATE_KEY` is a shared PKCS#8 PEM RSA private key (at least 2048 bits); the application derives its verification key. Store the same key on all replicas so tokens survive restarts and load balancing. Empty login credentials, issuer, audience or subject, a colon in `TOKEN_USERNAME`, or a missing/invalid signing key prevent startup. Token responses use `Cache-Control: no-store`.
+All banking endpoints require `Authorization: Bearer <RS256 JWT>`. Validate the configured issuer, audience, expiration and nonempty subject. `POST /auth/token` accepts HTTP Basic credentials and returns `{access_token, token_type, expires_in}` for 900 seconds. The configured `TOKEN_USERNAME` / `TOKEN_PASSWORD` login is the administrator: its token retains `TOKEN_SUBJECT` (default `alice`) and includes scope `users:manage`. Managed users authenticate with their own username/password and receive their immutable user UUID as the subject, without administrative scope. Clients cannot choose claims through the request body. Basic credentials cannot access banking endpoints. `JWT_PRIVATE_KEY` is a shared PKCS#8 PEM RSA private key (at least 2048 bits); the application derives its verification key. Store the same key on all replicas so tokens survive restarts and load balancing. Empty administrator credentials, issuer, audience or subject, a colon in `TOKEN_USERNAME`, or a missing/invalid signing key prevent startup. Token responses use `Cache-Control: no-store`.
 
 | Method/path | Request | Result |
 |---|---|---|
 | `GET /accounts/{uuid}/balance` | Bearer token | `{"balance":100.00,"currency":"SGD"}` |
+| `GET /accounts/list?limit=50&offset=0` | Bearer token | Owned accounts as `[{id,balance,currency}]`, ordered by ID |
 | `POST /accounts/{uuid}/deposits` | `{"amount":0.01}` and `Idempotency-Key` | Resulting balance |
 | `POST /accounts/{uuid}/withdrawals` | Same | Resulting balance |
 | `POST /auth/token` | HTTP Basic authentication; no body | RS256 Bearer token, valid for 15 minutes |
+| `POST /users` | Administrator Bearer token; `{username,displayName,password}` | 201 and safe user profile with Location |
+| `GET /users?limit=50&offset=0` | Administrator Bearer token | Active user profiles ordered by username and ID |
+| `GET /users/{uuid}` | Administrator Bearer token | `{id,username,displayName}` |
+| `PUT /users/{uuid}` | Administrator Bearer token; `{username,displayName,password?}` | Updated safe profile; omitted/null password keeps current password |
+| `DELETE /users/{uuid}` | Administrator Bearer token | 204; soft deletion revokes login/tokens and preserves banking data |
 | `GET /readyz` | No credentials | `SELECT 1` database connectivity, 200/503; does not validate schema |
 | `GET /livez` | No credentials | Minimal process health |
 | `GET /version` | No credentials | `{version, source}` from build information and `SOURCE_SHA` |
 
 Money is positive SGD with at most two fractional digits and seventeen integer digits. Mutations lock the account row and write the balance and operation ledger in one transaction. A key is 1–128 ASCII letters/digits or `._:-`, scoped to an account. Replaying the same amount/operation returns its original result, even after later operations. Changing the payload for an existing key returns 409. Keys are retained with the ledger; there is no expiry policy in this demonstration.
 
-400 means invalid input; 401 invalid/missing authentication; 404 unknown or unowned account; 409 insufficient funds, balance limit or idempotency conflict; 500 is a redacted server failure. The demo uses a seeded account and has no account creation or deletion endpoints. `SEED_SYNTHETIC=true` on the separate migration task creates account `00000000-0000-0000-0000-000000000001`, subject `alice`, SGD100 once. Repeated migrations do not reset it. The seed always belongs to `alice`; setting `TOKEN_SUBJECT` to another value does not change that ownership.
+400 means invalid input; 401 invalid/missing authentication; 403 insufficient directory privileges; 404 missing user or unknown/unowned account; 409 duplicate/reserved username, insufficient funds, balance limit or idempotency conflict; 500 is a redacted server failure. Both lists accept `limit` 1–100 (default 50) and nonnegative `offset` (default 0); empty pages return `[]` with HTTP 200. The demo uses a seeded account and has no account creation or deletion endpoints. `SEED_SYNTHETIC=true` on the separate migration task creates account `00000000-0000-0000-0000-000000000001`, subject `alice`, SGD100 once. Repeated migrations do not reset it. The seed always belongs to `alice`; setting `TOKEN_SUBJECT` to another value does not change that ownership.
+
+### User management
+
+Log in with the configured administrator credentials, then use its Bearer token on `/users`. New users start without accounts. Existing synthetic account subjects remain unchanged; `/users` lists managed database users, while the configured administrator stays outside CRUD so it cannot be removed or changed through the directory. Ordinary and legacy JWTs without `users:manage` receive 403 for all directory operations.
+
+Usernames are lowercase ASCII, 3–64 characters, starting with a letter and containing letters, digits, dot, underscore or hyphen. The configured administrator username is reserved, case-insensitively. Display names are nonblank and at most 100 characters. Passwords are nonblank, 12–72 characters and at most 72 UTF-8 bytes; BCrypt hashes are stored, and neither plaintext passwords nor hashes appear in responses. User-directory responses use `Cache-Control: no-store`.
+
+Changing a username does not change the UUID subject or account ownership. Changing a password increments a credential version; managed-user JWTs validate that version and active status against PostgreSQL on every authenticated request. Old tokens stop working immediately after password change or deletion, including across replicas. Directory/database failure denies managed-user token validation. Existing legacy and configured-administrator tokens remain valid under the original issuer/audience/signature/expiry rules and require no directory lookup. Deletion retains the user record and reserves its final username; accounts and transaction history stay intact. Login remains unavailable for deleted users.
 
 ## Database migrations
 
@@ -79,7 +93,7 @@ docker run --rm --network banking-quickstart_default \
   -e DB_URL -e DB_USERNAME -e DB_PASSWORD banking-api:local clear-checksums
 ```
 
-There is currently one changeset. Rolling it back drops `banking_operations` and `banking_accounts`, including their data. Use a database backup if that data must be recoverable. Running `migrate` afterward recreates empty tables; `SEED_SYNTHETIC=true` optionally recreates the demo account, but does not restore deleted transactions. Rollback SQL lives alongside the forward SQL; include rollback definitions in future changesets.
+There are two changesets. `002-users` adds the user directory without altering existing accounts or transaction history; apply it with the existing separate `migrate` command before using the new API. Rolling back one changeset removes `banking_users`, including its credentials; banking data remains intact. Rolling back both also drops `banking_operations` and `banking_accounts`, including their data. Use a database backup if that data must be recoverable. Running `migrate` afterward recreates removed tables; `SEED_SYNTHETIC=true` optionally recreates the demo account, but does not restore deleted users or transactions. Rollback SQL lives alongside the forward SQL; include rollback definitions in future changesets.
 
 `clear-checksums` clears Liquibase's stored checksums without changing the application tables or undoing migrations. The next `migrate` recalculates them and applies any pending changesets; it does not rerun previously applied SQL. Use checksum clearing only after reviewing the reason for a checksum mismatch, not as a replacement for a new changeset.
 

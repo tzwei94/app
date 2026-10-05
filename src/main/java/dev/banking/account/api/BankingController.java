@@ -1,11 +1,13 @@
 package dev.banking.account.api;
 import dev.banking.account.application.BankingService;
 import dev.banking.account.domain.Balance;
+import dev.banking.account.domain.AccountSummary;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import java.math.BigDecimal;
 import java.util.UUID;
+import java.util.List;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
@@ -16,6 +18,9 @@ class BankingController {
     private final BankingService service;
     BankingController(BankingService service) {this.service=service;}
     @GetMapping("/accounts/{id}/balance") Balance balance(@PathVariable UUID id,@AuthenticationPrincipal Jwt jwt) {return service.balance(id,jwt.getSubject());}
+    @GetMapping("/accounts/list") List<AccountSummary> list(@AuthenticationPrincipal Jwt jwt,
+            @RequestParam(defaultValue="50") @Min(1) @Max(100) int limit,
+            @RequestParam(defaultValue="0") @Min(0) int offset) {return service.list(jwt.getSubject(),limit,offset);}
     @PostMapping("/accounts/{id}/deposits") Balance deposit(@PathVariable UUID id,@AuthenticationPrincipal Jwt jwt,@Valid @RequestBody Money money,
             @RequestHeader("Idempotency-Key") @Pattern(regexp="[A-Za-z0-9._:-]{1,128}") String key) {return service.mutate(id,jwt.getSubject(),"deposit",money.amount(),key);}
     @PostMapping("/accounts/{id}/withdrawals") Balance withdraw(@PathVariable UUID id,@AuthenticationPrincipal Jwt jwt,@Valid @RequestBody Money money,

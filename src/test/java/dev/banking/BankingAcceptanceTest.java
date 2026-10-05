@@ -142,6 +142,24 @@ class BankingAcceptanceTest {
         assertThat(mutate("withdrawals","5","x","bob")).isEqualTo(404);
         http.perform(get("/accounts/00000000-0000-0000-0000-000000000099/balance").header("Authorization",bearer("alice"))).andExpect(status().isNotFound());
     }
+    @Test void accountListIsOwnedOrderedPaginatedAndUsesSafeFields()throws Exception {
+        var second=UUID.fromString("00000000-0000-0000-0000-000000000002");
+        var other=UUID.fromString("00000000-0000-0000-0000-000000000003");
+        db.update("INSERT INTO banking_accounts(id,owner_subject,balance,currency) VALUES (?,?,200,'SGD')",second,"alice");
+        db.update("INSERT INTO banking_accounts(id,owner_subject,balance,currency) VALUES (?,?,300,'SGD')",other,"bob");
+        http.perform(get("/accounts/list").header("Authorization",bearer("alice")))
+            .andExpect(status().isOk()).andExpect(content().json("[{\"id\":\""+ACCOUNT+"\",\"balance\":100,\"currency\":\"SGD\"},"
+                +"{\"id\":\""+second+"\",\"balance\":200,\"currency\":\"SGD\"}]",org.springframework.test.json.JsonCompareMode.STRICT));
+        http.perform(get("/accounts/list?limit=1&offset=1").header("Authorization",bearer("alice")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1)).andExpect(jsonPath("$[0].id").value(second.toString()));
+        http.perform(get("/accounts/list").header("Authorization",bearer("bob")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1)).andExpect(jsonPath("$[0].id").value(other.toString()));
+        http.perform(get("/accounts/list").header("Authorization",bearer("no-accounts")))
+            .andExpect(status().isOk()).andExpect(content().json("[]"));
+        http.perform(get("/accounts/list")).andExpect(status().isUnauthorized());
+        for(var query:new String[]{"limit=0","limit=101","offset=-1","limit=abc"})
+            http.perform(get("/accounts/list?"+query).header("Authorization",bearer("alice"))).andExpect(status().isBadRequest());
+    }
     @Test void validatesSignatureIssuerAudienceAndExpiry()throws Exception {
         var valid=Instant.now().plusSeconds(300);
         for(var t:new String[]{token("alice",null,"banking-test",valid,KEYS),token("alice","wrong","banking-test",valid,KEYS),token("alice","banking-api","wrong",valid,KEYS),token("alice","banking-api","banking-test",Instant.now().minusSeconds(3600),KEYS),token("alice","banking-api","banking-test",valid,keys())})

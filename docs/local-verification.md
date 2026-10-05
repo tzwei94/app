@@ -19,7 +19,7 @@ The checked-in `./mvnw` pins Maven 3.9.11 and verifies the downloaded distributi
 | `make verify` | All three checks above | Does not run `actionlint` or build/scan container images |
 | `make smoke` | Builds local API/Alloy images and runs the HTTP/telemetry fixture | Docker Compose, curl, OpenSSL, uv and sibling `../deployment/deploy/monitoring` checkout |
 
-The Java test script creates a disposable PostgreSQL container, publishes it on an assigned loopback port and removes it on exit. Tests cover money rules, JWT validation, Basic token issuance, account ownership, concurrent mutations and retries, transaction rollback, and Liquibase migration, rollback and checksum commands.
+The Java test script creates a disposable PostgreSQL container, publishes it on an assigned loopback port and removes it on exit. Tests cover money rules, JWT validation, Basic token issuance, account ownership and paginated listing, administrator-only user CRUD, independent user login, credential/token revocation, concurrent duplicate usernames, concurrent mutations and retries, transaction rollback, and Liquibase migration, rollback and checksum commands.
 
 To supply a test database, export both `BANK_TEST_DB_URL` (a JDBC URL reachable from the host JVM) and `BANK_TEST_DB_PASSWORD`; the username must be `banking_test`. Use a disposable database: the suite clears its banking tables. The script does not remove an externally supplied database.
 
